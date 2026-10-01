@@ -24,11 +24,11 @@ const muxSubtitle = ref<File | null>(null)
 /**
  * Language tag written into the subtitle track's metadata.
  *
- * Not exposed in the interface: it only matters when a file carries several
- * subtitle tracks, and this panel produces exactly one. Left as a constant so
- * the CLI's `--language` remains the way to override it.
+ * Players show this name in their track menu and use it to auto-select by
+ * system language. Defaults to Chinese, since that is what this tool is
+ * overwhelmingly used for; anyone subtitling something else can say so.
  */
-const MUX_LANGUAGE = 'Chinese'
+const muxLanguage = ref('Chinese')
 const muxJob = ref<JobStatus | null>(null)
 const muxError = ref<string | null>(null)
 const muxBusy = ref(false)
@@ -48,7 +48,7 @@ async function runMux() {
   muxError.value = null
   muxJob.value = null
   try {
-    muxJob.value = await mux(muxVideo.value, muxSubtitle.value, MUX_LANGUAGE)
+    muxJob.value = await mux(muxVideo.value, muxSubtitle.value, muxLanguage.value)
   } catch (e) {
     muxError.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -301,6 +301,13 @@ onBeforeUnmount(() => controller?.abort())
               <span v-if="muxSubtitle">{{ muxSubtitle.name }}</span>
               <span v-else class="muted">选择 SRT</span>
             </label>
+          </div>
+          <div>
+            <label for="muxlang">字幕语言</label>
+            <select id="muxlang" v-model="muxLanguage">
+              <option v-for="l in LANGUAGES" :key="l" :value="l">{{ l }}</option>
+            </select>
+            <p class="hint">写入字幕轨的元数据，供播放器显示轨道名称与自动选轨。</p>
           </div>
         </div>
 
