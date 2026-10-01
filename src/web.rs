@@ -1,3 +1,6 @@
+// Copyright 2026 youyoEulgo
+// SPDX-License-Identifier: Apache-2.0
+
 //! Web interface: static assets and the HTTP API behind them.
 //!
 //! # Why jobs rather than one request
