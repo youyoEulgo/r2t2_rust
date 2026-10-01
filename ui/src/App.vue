@@ -21,7 +21,14 @@ const tab = ref<'transcribe' | 'mux'>('transcribe')
 // ---- mux panel state ----
 const muxVideo = ref<File | null>(null)
 const muxSubtitle = ref<File | null>(null)
-const muxLanguage = ref('Chinese')
+/**
+ * Language tag written into the subtitle track's metadata.
+ *
+ * Not exposed in the interface: it only matters when a file carries several
+ * subtitle tracks, and this panel produces exactly one. Left as a constant so
+ * the CLI's `--language` remains the way to override it.
+ */
+const MUX_LANGUAGE = 'Chinese'
 const muxJob = ref<JobStatus | null>(null)
 const muxError = ref<string | null>(null)
 const muxBusy = ref(false)
@@ -41,7 +48,7 @@ async function runMux() {
   muxError.value = null
   muxJob.value = null
   try {
-    muxJob.value = await mux(muxVideo.value, muxSubtitle.value, muxLanguage.value)
+    muxJob.value = await mux(muxVideo.value, muxSubtitle.value, MUX_LANGUAGE)
   } catch (e) {
     muxError.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -143,8 +150,11 @@ onBeforeUnmount(() => controller?.abort())
     <header>
       <h1>r2t2 <span class="sub">语音转写</span></h1>
       <p class="lead">
-        上传音频得到文字，上传视频得到字幕与内嵌字幕的视频。
-        推理在本机进行，文件不会离开这台机器。
+        识别模型为
+        <a href="https://huggingface.co/netease-youdao/Confucius4-R2T2" target="_blank" rel="noreferrer">
+          Confucius4-R2T2</a>，由网易有道开源；推理基于
+        <a href="https://github.com/ggml-org/llama.cpp" target="_blank" rel="noreferrer">llama.cpp</a>。
+        感谢两个团队的开源工作。所有计算在本机完成。
       </p>
     </header>
 
@@ -292,12 +302,6 @@ onBeforeUnmount(() => controller?.abort())
               <span v-else class="muted">选择 SRT</span>
             </label>
           </div>
-          <div>
-            <label for="muxlang">字幕语言标记</label>
-            <select id="muxlang" v-model="muxLanguage">
-              <option v-for="l in LANGUAGES" :key="l" :value="l">{{ l }}</option>
-            </select>
-          </div>
         </div>
 
         <div class="actions">
@@ -374,7 +378,9 @@ onBeforeUnmount(() => controller?.abort())
 
 header h1 { margin: 0 0 0.25rem; font-size: 1.6rem; letter-spacing: -0.01em; }
 header h1 .sub { color: var(--muted); font-weight: 400; font-size: 1.1rem; }
-.lead { margin: 0 0 2rem; color: var(--muted); max-width: 62ch; }
+.lead { margin: 0 0 2rem; color: var(--muted); max-width: 66ch; }
+.lead a { color: var(--accent); text-decoration: none; }
+.lead a:hover { text-decoration: underline; }
 
 /* ---------- tabs ---------- */
 .tabs { display: flex; gap: 0.25rem; margin-bottom: 0.75rem; }

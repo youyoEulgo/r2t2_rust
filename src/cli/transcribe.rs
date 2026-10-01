@@ -2,16 +2,16 @@
 
 use std::path::PathBuf;
 
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use clap::{Args, ValueEnum};
 
 use crate::audio::TARGET_SAMPLE_RATE;
 use crate::cli::CommonArgs;
 use crate::engine::Engine;
 use crate::media;
+use crate::prompt;
 use crate::subtitle::{self, QualityConfig, SplitConfig};
 use crate::vad::{Sensitivity, VadConfig};
-use crate::prompt;
 
 /// What to write to stdout or the output file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -70,7 +70,11 @@ pub struct TranscribeArgs {
 
     // ---- segmentation -----------------------------------------------------
     /// VAD sensitivity: quality | lowbitrate | aggressive | veryaggressive.
-    #[arg(long = "vad-sensitivity", value_name = "LEVEL", default_value = "aggressive")]
+    #[arg(
+        long = "vad-sensitivity",
+        value_name = "LEVEL",
+        default_value = "aggressive"
+    )]
     pub vad_sensitivity: String,
 
     /// Milliseconds of silence that end a segment.
@@ -336,11 +340,7 @@ pub(crate) fn speech_of_segment(
         return Ok(String::new());
     }
 
-    let p = prompt::build(
-        &args.common.context,
-        args.common.forced_language(),
-        "",
-    );
+    let p = prompt::build(&args.common.context, args.common.forced_language(), "");
     let result = engine.transcribe(&samples[start..end], &p, args.max_tokens)?;
     let (_, text) = crate::stream::parse_asr_output(&result.text, args.common.forced_language());
 
@@ -364,8 +364,14 @@ pub fn join_segments(parts: &[String]) -> String {
             continue;
         }
         if !out.is_empty() {
-            let prev_latin = out.chars().last().is_some_and(|c| c.is_ascii_alphanumeric());
-            let next_latin = part.chars().next().is_some_and(|c| c.is_ascii_alphanumeric());
+            let prev_latin = out
+                .chars()
+                .last()
+                .is_some_and(|c| c.is_ascii_alphanumeric());
+            let next_latin = part
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphanumeric());
             if prev_latin && next_latin {
                 out.push(' ');
             }
