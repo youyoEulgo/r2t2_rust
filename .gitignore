@@ -1,0 +1,30 @@
+# Build output
+/target
+
+# Model weights. Several GB of GGUF that must be downloaded separately; see
+# the README for the source repos.
+/checkpoints
+
+# Generated artefacts: muxed videos, produced subtitle files at the root.
+/output
+/*.srt
+/*.ass
+/*.vtt
+
+# Media inputs. Large, and not part of the source; keep the small sample the
+# test suite uses by un-ignoring it below.
+/resources/*
+!/resources/test.wav
+!/resources/*.md
+
+# The vendored llama.cpp build products and headers ARE tracked on purpose:
+# they are what makes the project buildable without a llama.cpp checkout, and
+# they carry the CPU-specific build flags that matter (see vendor/README.md).
+# /vendor stays tracked.
+
+# Editor / OS noise
+.DS_Store
+*.swp
+*~
+.vscode/
+.idea/

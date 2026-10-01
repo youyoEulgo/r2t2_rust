@@ -1,0 +1,53 @@
+[package]
+name = "r2t2_rust"
+version = "0.1.0"
+edition = "2024"
+description = "Pure-Rust CLI and server for Confucius4-R2T2 speech recognition via llama.cpp"
+
+[lib]
+name = "r2t2"
+path = "src/lib.rs"
+
+[[bin]]
+name = "r2t2"
+path = "src/main.rs"
+
+[[bin]]
+name = "r2t2-server"
+path = "src/bin/server.rs"
+
+[[bin]]
+name = "r2t2-sub"
+path = "src/bin/subtitle.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+hound = "3"
+
+# WebSocket service
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
+axum = { version = "0.8", features = ["ws"] }
+futures-util = "0.3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Voice activity detection: WebRTC's C implementation behind a thin binding.
+# Chosen over a neural VAD for the same reason llama.cpp was chosen over vLLM:
+# a small, self-contained C dependency with no model download.
+webrtc-vad = "0.4"
+
+[build-dependencies]
+bindgen = "0.72"
+
+# The integration client in examples/ speaks the wire protocol directly, so it
+# does not depend on any Python tooling being installed.
+[dev-dependencies]
+tokio-tungstenite = "0.28"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
