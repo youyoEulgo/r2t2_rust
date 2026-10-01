@@ -1,3 +1,6 @@
+// Copyright 2026 youyoEulgo
+// SPDX-License-Identifier: Apache-2.0
+
 //! Media input: decode any audio/video file to the mono 16 kHz `f32` the model
 //! needs.
 //!

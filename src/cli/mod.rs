@@ -1,3 +1,6 @@
+// Copyright 2026 youyoEulgo
+// SPDX-License-Identifier: Apache-2.0
+
 //! Command-line surface.
 //!
 //! One binary, one subcommand per mode. Everything the three modes agree on --

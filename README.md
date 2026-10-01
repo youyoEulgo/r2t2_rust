@@ -306,3 +306,31 @@ cargo test
 Covers prompt construction byte-for-byte against the reference, output parsing,
 the VAD state machine (including WebRTC VAD's ~3-frame hangover), cue splitting,
 and the quality guards.
+
+## Licence
+
+This project is **Apache-2.0** ([LICENSE](LICENSE)), the same licence as the
+upstream code it derives from.
+
+Four source files are derived from NetEase Youdao's Confucius4-R2T2, which is
+Apache-2.0, and one function from Alibaba's Qwen3-ASR, likewise Apache-2.0.
+Each says so at the top of the file, and [NOTICE](NOTICE) records which parts
+came from where and what was changed.
+
+**The model weights are not covered by this licence.** They are published
+separately by NetEase Youdao under the [NetEase Youdao Model Use License
+Agreement](https://github.com/netease-youdao/Confucius4-R2T2/blob/master/MODEL_LICENSE),
+and downloading them means accepting its terms. Two of its conditions are worth
+knowing before you deploy anything:
+
+- **Commercial scale.** If you or your affiliates exceed 100 million monthly
+  active users, or RMB 1 billion in annual revenue, you need a separate licence
+  from NetEase Youdao.
+- **No distillation.** The model may not be used to improve another AI model,
+  except a non-commercial one.
+
+It also disallows high-risk deployments such as medical diagnosis, autonomous
+driving, military use, and large-scale biometric surveillance.
+
+`vendor/lib` and `vendor/include` are llama.cpp build products, redistributed
+under the MIT licence (full text in NOTICE).

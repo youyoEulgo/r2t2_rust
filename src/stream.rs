@@ -1,3 +1,12 @@
+// Copyright 2026 youyoEulgo
+// SPDX-License-Identifier: Apache-2.0
+//
+// This file ports the streaming algorithm from `r2t2/r2t2_asr.py`,
+// and `parse_asr_output` from Qwen3-ASR's `qwen_asr.inference.utils`
+//
+// Modifications are described in NOTICE; they are not endorsed by
+// the original authors.
+
 //! Streaming (chunked) transcription: the Longest-Stable-Prefix loop.
 //!
 //! This is a port of `R2T2ASRModel.streaming_transcribe()` from the Python

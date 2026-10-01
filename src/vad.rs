@@ -1,3 +1,6 @@
+// Copyright 2026 youyoEulgo
+// SPDX-License-Identifier: Apache-2.0
+
 //! Voice activity detection, and the segment state machine built on it.
 //!
 //! [`webrtc_vad`] decides per 10/20/30 ms frame whether speech is present. On

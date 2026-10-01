@@ -1,3 +1,6 @@
+// Copyright 2026 youyoEulgo
+// SPDX-License-Identifier: Apache-2.0
+
 //! Integration test client for `r2t2 serve`.
 //!
 //! Streams a WAV file over the real WebSocket protocol, then EOS, and prints

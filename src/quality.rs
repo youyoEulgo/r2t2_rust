@@ -1,3 +1,12 @@
+// Copyright 2026 youyoEulgo
+// SPDX-License-Identifier: Apache-2.0
+//
+// This file ports `detect_and_fix_repetitions` and `detect_hallucination`
+// from Confucius4-R2T2's `ws_server.py`
+//
+// Modifications are described in NOTICE; they are not endorsed by
+// the original authors.
+
 //! Output quality guards: repetition repair and hallucination detection.
 //!
 //! ASR models fail in two characteristic ways on difficult audio, and both are

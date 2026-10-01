@@ -1,3 +1,6 @@
+// Copyright 2026 youyoEulgo
+// SPDX-License-Identifier: Apache-2.0
+
 //! Build script: generate FFI bindings for llama.cpp and wire up linking.
 //!
 //! Two things happen here:

@@ -1,3 +1,6 @@
+// Copyright 2026 youyoEulgo
+// SPDX-License-Identifier: Apache-2.0
+
 //! Audio loading: any WAV in, mono 16 kHz `f32` out.
 //!
 //! llama.cpp's `mtmd_bitmap_init_from_audio` expects mono 16 kHz samples, so

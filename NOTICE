@@ -1,0 +1,87 @@
+r2t2
+Copyright 2026 youyoEulgo
+
+This product includes software developed by third parties, as set out below.
+
+
+--------------------------------------------------------------------------------
+Confucius4-R2T2 — https://github.com/netease-youdao/Confucius4-R2T2
+Copyright 2026 The NetEase Youdao team
+Licensed under the Apache License, Version 2.0
+--------------------------------------------------------------------------------
+
+Several source files are derived from the reference implementation:
+
+  src/engine.rs    mirrors  r2t2_llama/native_ext.cpp
+  src/stream.rs    ports    r2t2/r2t2_asr.py  (streaming_transcribe,
+                            streaming_transcribe_no_reset)
+  src/quality.rs   ports    ws_server.py      (detect_and_fix_repetitions,
+                            detect_hallucination)
+  src/prompt.rs    reproduces r2t2_llama/llama_native_backend.py
+                            (build_asr_prompt)
+
+These files have been changed in the course of porting: the algorithms were
+translated from Python and C++ into Rust, and the tokenizer was changed from
+HuggingFace's to llama.cpp's. Any such modification is not endorsed, warranted,
+or guaranteed by NetEase Youdao, and NetEase Youdao disclaims all liability
+relating to it.
+
+The model weights are not part of this product. They are published separately
+by NetEase Youdao under the NetEase Youdao Model Use License Agreement
+(https://github.com/netease-youdao/Confucius4-R2T2/blob/master/MODEL_LICENSE),
+whose terms are not the terms of this file, and which the user accepts by
+downloading them.
+
+
+--------------------------------------------------------------------------------
+Qwen3-ASR (`qwen-asr`) — https://github.com/QwenLM/Qwen3-ASR
+Copyright 2026 The Alibaba Qwen team
+Licensed under the Apache License, Version 2.0
+--------------------------------------------------------------------------------
+
+  src/stream.rs    ports parse_asr_output() from qwen_asr.inference.utils
+
+
+--------------------------------------------------------------------------------
+llama.cpp — https://github.com/ggml-org/llama.cpp
+Copyright 2023-2026 The ggml authors
+Licensed under the MIT License
+--------------------------------------------------------------------------------
+
+The libraries in vendor/lib, and the headers in vendor/include, are build
+products of llama.cpp, linked at runtime rather than modified. They are
+redistributed under the terms of the MIT License:
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in
+  all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+
+
+--------------------------------------------------------------------------------
+WebRTC VAD (`libfvad`, via the `webrtc-vad` crate)
+https://github.com/dpirch/libfvad
+Copyright 2011 The WebRTC project authors
+Copyright 2016 Daniel Pirch
+Licensed under a BSD-style licence (3-clause)
+--------------------------------------------------------------------------------
+
+  src/vad.rs       calls the WebRTC voice activity detector through the
+                   `webrtc-vad` crate, which compiles the original C
+                   implementation rather than reimplementing it. The crate
+                   itself is MIT licensed; the C code it builds carries the
+                   BSD-style licence above, whose text is reproduced in that
+                   crate's LICENSE file.

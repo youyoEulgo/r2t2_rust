@@ -1,3 +1,12 @@
+// Copyright 2026 youyoEulgo
+// SPDX-License-Identifier: Apache-2.0
+//
+// This file reproduces `build_asr_prompt` from Confucius4-R2T2's
+// `r2t2_llama/llama_native_backend.py`
+//
+// Modifications are described in NOTICE; they are not endorsed by
+// the original authors.
+
 //! Prompt construction.
 //!
 //! This reproduces `build_asr_prompt()` from the Python project's

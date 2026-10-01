@@ -2,7 +2,10 @@
 name = "r2t2_rust"
 version = "0.1.0"
 edition = "2024"
-description = "Pure-Rust CLI and server for Confucius4-R2T2 speech recognition via llama.cpp"
+description = "Speech recognition with Confucius4-R2T2 through llama.cpp, without a Python runtime"
+license = "Apache-2.0"
+authors = ["youyoEulgo"]
+readme = "README.md"
 
 [lib]
 name = "r2t2"

@@ -1,3 +1,6 @@
+// Copyright 2026 youyoEulgo
+// SPDX-License-Identifier: Apache-2.0
+
 //! Where the program keeps its data, and how it obtains a model.
 //!
 //! Everything lives under one directory, following the XDG base directory

@@ -1,3 +1,11 @@
+// Copyright 2026 youyoEulgo
+// SPDX-License-Identifier: Apache-2.0
+//
+// This file mirrors `r2t2_llama/native_ext.cpp` from Confucius4-R2T2
+//
+// Modifications are described in NOTICE; they are not endorsed by
+// the original authors.
+
 //! Safe, RAII-wrapped bindings around libllama + libmtmd.
 //!
 //! This mirrors the reference implementation in the Python project's

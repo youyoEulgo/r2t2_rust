@@ -1,3 +1,6 @@
+// Copyright 2026 youyoEulgo
+// SPDX-License-Identifier: Apache-2.0
+
 //! `r2t2 transcribe` — turn an audio or video file into text or subtitles.
 
 use std::path::PathBuf;

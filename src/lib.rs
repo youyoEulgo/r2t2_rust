@@ -1,3 +1,6 @@
+// Copyright 2026 youyoEulgo
+// SPDX-License-Identifier: Apache-2.0
+
 //! Confucius4-R2T2 speech recognition, driven from Rust.
 //!
 //! The crate links llama.cpp's `libllama` and `libmtmd` through FFI -- the same

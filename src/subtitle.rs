@@ -1,3 +1,6 @@
+// Copyright 2026 youyoEulgo
+// SPDX-License-Identifier: Apache-2.0
+
 //! Subtitle generation: media in, SRT out.
 //!
 //! The pipeline is deliberately **offline** rather than streaming, because a

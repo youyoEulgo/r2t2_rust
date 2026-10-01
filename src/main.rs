@@ -1,3 +1,6 @@
+// Copyright 2026 youyoEulgo
+// SPDX-License-Identifier: Apache-2.0
+
 //! Single entry point for Confucius-R2T2 speech recognition.
 //!
 //! Three modes, one binary:

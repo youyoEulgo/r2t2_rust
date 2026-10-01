@@ -1,3 +1,6 @@
+// Copyright 2026 youyoEulgo
+// SPDX-License-Identifier: Apache-2.0
+
 //! `r2t2 mux` — combine a video and a subtitle file into one Matroska file.
 //!
 //! A separate subcommand rather than a flag on `transcribe`, because it does no

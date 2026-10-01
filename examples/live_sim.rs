@@ -1,3 +1,6 @@
+// Copyright 2026 youyoEulgo
+// SPDX-License-Identifier: Apache-2.0
+
 //! Simulate a live stream: send audio in real time, print text as it arrives.
 //!
 //! Unlike `ws_client`, which blasts the whole file as fast as the socket

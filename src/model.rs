@@ -1,3 +1,6 @@
+// Copyright 2026 youyoEulgo
+// SPDX-License-Identifier: Apache-2.0
+
 //! Locating the model's GGUF pair.
 //!
 //! The language model and the audio projector are separate GGUF files that must

@@ -1,3 +1,6 @@
+// Copyright 2026 youyoEulgo
+// SPDX-License-Identifier: Apache-2.0
+
 //! `r2t2 serve` — live speech recognition over WebSocket.
 //!
 //! Speaks the same protocol as the reference Python server, so existing clients
