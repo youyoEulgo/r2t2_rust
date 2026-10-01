@@ -29,6 +29,7 @@
 //! limit and never produce a natural place to break the text.
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -99,6 +100,17 @@ pub struct ServeArgs {
     /// Milliseconds of speech that start one.
     #[arg(long = "vad-min-speech-ms", value_name = "MS", default_value_t = 160)]
     pub vad_min_speech_ms: u64,
+
+    /// Do not serve the web interface; WebSocket only.
+    #[arg(long = "no-web")]
+    pub no_web: bool,
+
+    /// Where uploaded files and their results are kept.
+    ///
+    /// Defaults to a directory under the system temporary directory, which is
+    /// cleared on reboot. Point this somewhere persistent to keep results.
+    #[arg(long = "work-dir", value_name = "DIR")]
+    pub work_dir: Option<PathBuf>,
 }
 
 /// Run the server. Blocks until interrupted.
@@ -106,7 +118,7 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     let (model, mmproj) = args.common.resolve_model()?;
     info!(model = %model.display(), mmproj = %mmproj.display(), "loading model");
 
-    let cfg = args.common.engine_config(model, mmproj);
+    let cfg = args.common.engine_config(model.clone(), mmproj.clone());
     let engine = StreamEngine::load(&cfg, MAX_NEW_TOKENS)
         .context("failed to initialise the llama.cpp engine")?;
     info!("model ready");
@@ -119,16 +131,44 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     };
     info!(?vad_config, "VAD configured");
 
+    // The web interface gets a second engine handle rather than sharing the
+    // streaming one: a llama.cpp context holds one KV cache and one sequence,
+    // and the streaming path keeps a long-lived state in it. Two handles cost
+    // a second copy of the KV cache but keep an upload from disturbing a live
+    // connection's sequence.
+    let web = if args.no_web {
+        None
+    } else {
+        let work_dir = args
+            .work_dir
+            .clone()
+            .unwrap_or_else(|| std::env::temp_dir().join("r2t2-web"));
+        std::fs::create_dir_all(&work_dir)
+            .with_context(|| format!("could not create {}", work_dir.display()))?;
+
+        // The engine is built on first upload, not here: a server used only
+        // for live audio should not pay for a second copy of the model.
+        info!(dir = %work_dir.display(), "web interface enabled");
+        Some(Arc::new(crate::web::WebState::new(
+            work_dir,
+            args.common.engine_config(&model, &mmproj),
+        )))
+    };
+
     let state = Arc::new(AppState {
         engine: Mutex::new(engine),
         vad_config,
         context: args.common.context.clone(),
+        web,
     });
 
-    let app = Router::new()
+    let mut app = Router::new()
         .route("/health", get(|| async { "ok" }))
-        .route("/asr_stream_api_v1", get(handler_v1))
-        .with_state(state);
+        .route("/asr_stream_api_v1", get(handler_v1));
+    if state.web.is_some() {
+        app = app.merge(crate::web::routes());
+    }
+    let app = app.with_state(state);
 
     let addr: SocketAddr = format!("{}:{}", args.bind, args.port)
         .parse()
@@ -229,11 +269,14 @@ impl OutEnvelope {
 // shared state
 // --------------------------------------------------------------------------- //
 
-struct AppState {
+pub struct AppState {
     /// One engine, serialised: see the module docs on concurrency.
     engine: Mutex<StreamEngine>,
     vad_config: VadConfig,
     context: String,
+    /// Present when the web interface is enabled. Its engine handle shares the
+    /// same context, so an upload and a live stream cannot decode at once.
+    pub web: Option<Arc<crate::web::WebState>>,
 }
 
 /// Resolves when the process should stop accepting work.

@@ -12,6 +12,7 @@
 //! * [`quality`] -- repetition repair and hallucination detection.
 //! * [`media`] -- decoding video and audio input via ffmpeg.
 //! * [`model`] -- locating the language model and projector GGUF pair.
+//! * [`web`] -- the web interface: static assets and the upload API.
 //! * [`audio`] -- decoding WAV input to the mono 16 kHz the model expects.
 //! * [`prompt`] -- chat-template prompt construction.
 //!
@@ -28,3 +29,4 @@ pub mod quality;
 pub mod stream;
 pub mod subtitle;
 pub mod vad;
+pub mod web;

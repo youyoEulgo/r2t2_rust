@@ -20,8 +20,8 @@ hound = "3"
 # WebSocket service
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
-axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "fs"] }
+axum = { version = "0.8", features = ["ws", "multipart"] }
 futures-util = "0.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -30,6 +30,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Chosen over a neural VAD for the same reason llama.cpp was chosen over vLLM:
 # a small, self-contained C dependency with no model download.
 webrtc-vad = "0.4"
+
+# The web interface: multipart uploads for the API, and the built frontend
+# embedded in the binary so a deployment is a single file.
+rust-embed = "8"
 
 [build-dependencies]
 bindgen = "0.72"

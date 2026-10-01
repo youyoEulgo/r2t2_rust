@@ -15,7 +15,7 @@ One binary, one subcommand per mode:
 | | |
 |---|---|
 | `r2t2 transcribe` | transcribe a file, one-shot or streaming |
-| `r2t2 serve` | WebSocket service for live audio |
+| `r2t2 serve` | web interface, plus a WebSocket API for live audio |
 | `r2t2 subtitle` | generate `.srt` subtitles from a video |
 
 ## Why
@@ -99,6 +99,40 @@ r2t2 transcribe -i audio.wav -l English
 r2t2 transcribe -i audio.wav --stream --show-updates   # incremental output
 ```
 
+### Web interface
+
+```sh
+r2t2 serve --gguf-dir checkpoints/gguf --port 8272
+# then open http://127.0.0.1:8272
+```
+
+Upload an audio file and get a transcript and a `.txt`; upload a video and also
+get an `.srt` and a Matroska file with the subtitles muxed in. Video and audio
+are stream-copied into the MKV, so that step is fast and lossless.
+
+Language, hotwords, VAD sensitivity, cue length and the quality guards are all
+adjustable in the page.
+
+Transcription takes longer than an HTTP request should stay open, so an upload
+returns a job id immediately and the page polls for progress. Jobs run one at a
+time — a single GPU has one context — and a queued job reports its position.
+
+The frontend lives in `ui/` and is embedded into the binary at build time, so a
+deployment is one file:
+
+```sh
+cd ui && bun install && bun run build && cd ..
+cargo build --release
+```
+
+`ui/dist` is committed, so building the Rust binary does **not** require a
+JavaScript toolchain. For frontend work, `bun run dev` in `ui/` serves the page
+with hot reload and proxies `/api` to a running `r2t2 serve`.
+
+`--no-web` serves only the WebSocket API, and `--work-dir` chooses where uploads
+and results are kept (the system temporary directory by default, which is
+cleared on reboot).
+
 ### Live audio over WebSocket
 
 ```sh
@@ -178,14 +212,17 @@ src/
   audio.rs       WAV decoding and resampling
   prompt.rs      chat-template prompt construction
   model.rs       locating the model and projector GGUF pair
+  web.rs         web interface: static assets, upload API, background jobs
   cli/
     mod.rs       shared flags and subcommand dispatch
     transcribe.rs
     serve.rs
     subtitle.rs
   main.rs        entry point
+ui/              frontend (Bun + Vite + Vue 3); dist/ is embedded at build time
 examples/
   ws_client.rs   protocol-level integration client
+  live_sim.rs    paced streaming client, for watching live output
 vendor/          llama.cpp headers and prebuilt libraries
 ```
 

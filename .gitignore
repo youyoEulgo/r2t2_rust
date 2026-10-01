@@ -28,3 +28,9 @@
 *~
 .vscode/
 .idea/
+
+# Frontend dependencies; the build output in ui/dist IS tracked so the Rust
+# build works without a JavaScript toolchain present.
+/ui/node_modules
+/ui/*.tsbuildinfo
+/ui/node_modules/.tmp

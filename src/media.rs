@@ -19,6 +19,99 @@ use anyhow::{bail, Context, Result};
 
 use crate::audio;
 
+/// Whether `path` looks like a container that has a video stream worth muxing
+/// subtitles into.
+///
+/// A plain audio file has nothing to carry a subtitle track, so the caller
+/// should offer SRT only.
+pub fn has_video_stream(path: &Path) -> Result<bool> {
+    let out = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v",
+            "-show_entries",
+            "stream=index",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(path)
+        .output()
+        .context("could not run ffprobe (is ffmpeg installed?)")?;
+    if !out.status.success() {
+        bail!(
+            "ffprobe failed on {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(!String::from_utf8_lossy(&out.stdout).trim().is_empty())
+}
+
+/// Mux an SRT file into a copy of `video`, writing Matroska to `out`.
+///
+/// The video and audio streams are **copied**, not re-encoded, so this is fast
+/// and lossless regardless of the input codec. The subtitle track is tagged
+/// with its language so players can select it by name.
+pub fn mux_subtitles(
+    video: &Path,
+    srt: &Path,
+    out: &Path,
+    language: &str,
+) -> Result<()> {
+    let lang = iso639_2(language);
+    let status = Command::new("ffmpeg")
+        .args(["-v", "error", "-y", "-i"])
+        .arg(video)
+        .arg("-i")
+        .arg(srt)
+        .args([
+            "-map", "0:v", "-map", "0:a?", "-map", "1:0",
+            "-c:v", "copy", "-c:a", "copy", "-c:s", "srt",
+            "-metadata:s:s:0", &format!("language={lang}"),
+            "-metadata:s:s:0", &format!("title={language}"),
+        ])
+        .arg(out)
+        .output()
+        .context("could not run ffmpeg to mux subtitles")?;
+
+    if !status.status.success() {
+        bail!(
+            "ffmpeg could not mux subtitles into {}: {}",
+            out.display(),
+            String::from_utf8_lossy(&status.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+/// Map a model language name to its ISO 639-2 code for the subtitle track tag.
+///
+/// Players match on the short code, so an untagged track shows as "unknown".
+/// Anything unrecognised falls back to `und` (undetermined), which is the
+/// correct marker for an unknown language.
+pub fn iso639_2_for_test(language: &str) -> &'static str {
+    iso639_2(language)
+}
+
+fn iso639_2(language: &str) -> &'static str {
+    match language.to_ascii_lowercase().as_str() {
+        "chinese" | "zh" | "cmn" | "mandarin" => "chi",
+        "english" | "en" => "eng",
+        "japanese" | "ja" => "jpn",
+        "korean" | "ko" => "kor",
+        "french" | "fr" => "fra",
+        "german" | "de" => "deu",
+        "spanish" | "es" => "spa",
+        "portuguese" | "pt" => "por",
+        "russian" | "ru" => "rus",
+        "italian" | "it" => "ita",
+        "arabic" | "ar" => "ara",
+        _ => "und",
+    }
+}
+
 /// How long the input is, in seconds, if it can be determined.
 pub fn probe_duration(path: &Path) -> Result<f64> {
     let out = Command::new("ffprobe")

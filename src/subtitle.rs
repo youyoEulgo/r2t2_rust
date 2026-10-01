@@ -144,7 +144,7 @@ pub fn build(
     }
 
     // Merge cues that are too short to read on their own.
-    let cues = merge_short(cues, split);
+    let cues = merge_adjacent(cues, split);
 
     Ok(SubtitleResult {
         cues,
@@ -399,7 +399,11 @@ fn rebalance_tail(pieces: &mut Vec<String>, cfg: &SplitConfig) {
 }
 
 /// Merge cues that are too brief to read, subject to the duration limit.
-fn merge_short(cues: Vec<Cue>, cfg: &SplitConfig) -> Vec<Cue> {
+/// Merge cues that are too brief to read into their predecessor.
+///
+/// Public because the web path builds cues segment by segment and needs the
+/// same pass at the end.
+pub fn merge_adjacent(cues: Vec<Cue>, cfg: &SplitConfig) -> Vec<Cue> {
     let mut out: Vec<Cue> = Vec::with_capacity(cues.len());
     for cue in cues {
         match out.last_mut() {
@@ -602,7 +606,7 @@ mod tests {
             Cue { start: 0.0, end: 0.2, text: "嗯".into() },
             Cue { start: 0.2, end: 1.0, text: "好的".into() },
         ];
-        let merged = merge_short(cues, &SplitConfig::default());
+        let merged = merge_adjacent(cues, &SplitConfig::default());
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].text, "嗯好的");
     }
