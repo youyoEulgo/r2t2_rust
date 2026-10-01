@@ -20,10 +20,6 @@ pub struct TranscribeArgs {
     #[arg(short = 'i', long = "input", value_name = "FILE")]
     pub input: PathBuf,
 
-    /// Write the transcript here instead of stdout.
-    #[arg(short = 'o', long = "output", value_name = "FILE")]
-    pub output: Option<PathBuf>,
-
     /// Maximum tokens to generate.
     #[arg(long = "max-tokens", value_name = "N", default_value_t = 256)]
     pub max_tokens: i32,
@@ -74,17 +70,9 @@ pub fn run(args: &TranscribeArgs) -> Result<()> {
         one_shot(args, &cfg, &samples)?
     };
 
-    let text = text.trim();
-    match &args.output {
-        Some(path) => {
-            std::fs::write(path, format!("{text}\n"))
-                .with_context(|| format!("could not write {}", path.display()))?;
-            if args.common.verbose {
-                eprintln!("wrote  : {}", path.display());
-            }
-        }
-        None => println!("{text}"),
-    }
+    // The transcript is the program's only stdout output, so a redirect or a
+    // pipe captures exactly the result and nothing else.
+    println!("{}", text.trim());
     Ok(())
 }
 

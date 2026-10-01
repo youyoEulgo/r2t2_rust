@@ -75,6 +75,21 @@ quantisations into one directory, which would otherwise silently pick one.
 
 ## Usage
 
+Results go to **stdout**; diagnostics go to **stderr** and only with
+`--verbose`. Nothing is written to a file unless `-o` asks for it, so a shell
+redirect and `-o` are interchangeable:
+
+```sh
+r2t2 transcribe -i audio.wav > transcript.txt
+r2t2 transcribe -i audio.wav -o transcript.txt      # the same thing
+```
+
+By default llama.cpp's own logging is switched off. It narrates every step —
+well over a thousand lines for a single short file — and would bury this
+program's messages. `--verbose` keeps it.
+
+`-v` prints the version; verbosity is `--verbose` only.
+
 ### Transcribe a file
 
 ```sh
@@ -112,9 +127,9 @@ cargo run --release --example ws_client -- --audio resources/test.wav
 ### Generate subtitles
 
 ```sh
-r2t2 subtitle -i movie.mp4 -o movie.srt
-r2t2 subtitle -i movie.mp4 --print                  # cues to stdout
-r2t2 subtitle -i movie.mp4 -c "会话容器 WSLC"        # hotwords
+r2t2 subtitle -i movie.mp4 > movie.srt                # to stdout
+r2t2 subtitle -i movie.mp4 -o movie.srt               # or straight to a file
+r2t2 subtitle -i movie.mp4 -c "会话容器 WSLC"          # hotwords
 ```
 
 Video is decoded through `ffmpeg`; WAV is read in process.

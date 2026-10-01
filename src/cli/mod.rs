@@ -14,16 +14,30 @@ pub mod subtitle;
 pub mod transcribe;
 
 /// Transcribe speech, serve it live, or generate subtitles.
+///
+/// Results go to stdout so they can be piped; diagnostics go to stderr and only
+/// with `--verbose`. Nothing is written to a file unless asked for with `-o`,
+/// which keeps a shell redirect and `-o` interchangeable.
 #[derive(Debug, Parser)]
 #[command(
     name = "r2t2",
     version,
+    // `-v` prints the version rather than toggling verbosity: that is the
+    // convention for a CLI, and verbosity is one flag nobody types often
+    // enough to need a short form.
+    disable_version_flag = true,
     about = "Speech recognition with Confucius-R2T2, via llama.cpp",
     long_about = "Speech recognition with Confucius-R2T2, via llama.cpp.\n\n\
                   Runs entirely in process: no Python, no conda, only the NVIDIA\n\
-                  driver is required at runtime."
+                  driver is required at runtime.\n\n\
+                  Results are written to stdout, so redirect or pipe them to save:\n\
+                  r2t2 transcribe -i audio.wav > out.txt"
 )]
 pub struct Cli {
+    /// Print version information.
+    #[arg(short = 'v', long = "version", action = clap::ArgAction::Version)]
+    pub version: (),
+
     #[command(subcommand)]
     pub command: Command,
 }
@@ -75,8 +89,11 @@ pub struct CommonArgs {
     #[arg(long = "cpu-only")]
     pub cpu_only: bool,
 
-    /// Print progress information to stderr.
-    #[arg(short = 'v', long = "verbose")]
+    /// Print progress and timing information to stderr.
+    ///
+    /// Diagnostics never go to stdout, so they cannot contaminate a piped
+    /// result.
+    #[arg(long = "verbose")]
     pub verbose: bool,
 }
 
@@ -103,6 +120,13 @@ impl CommonArgs {
 
     /// Resolve the GGUF pair, reporting it when `--verbose`.
     pub fn resolve_model(&self) -> anyhow::Result<(PathBuf, PathBuf)> {
+        // llama.cpp narrates everything it does. Without --verbose that output
+        // buries this program's own messages, so it is switched off before any
+        // model is loaded.
+        if !self.verbose {
+            crate::engine::silence_llama_logging();
+        }
+
         let (model, mmproj) = crate::model::resolve_gguf(&self.gguf_dir)?;
         if self.verbose {
             eprintln!("model  : {}", model.display());

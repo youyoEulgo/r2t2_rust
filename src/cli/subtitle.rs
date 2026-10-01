@@ -20,7 +20,7 @@ pub struct SubtitleArgs {
     #[arg(short = 'i', long = "input", value_name = "FILE")]
     pub input: PathBuf,
 
-    /// Where to write the subtitle file. Defaults to the input name with `.srt`.
+    /// Where to write the subtitle file. Omit to write to stdout.
     #[arg(short = 'o', long = "output", value_name = "FILE")]
     pub output: Option<PathBuf>,
 
@@ -58,10 +58,6 @@ pub struct SubtitleArgs {
     /// Keep segments flagged as hallucinated instead of dropping them.
     #[arg(long = "keep-hallucinations")]
     pub keep_hallucinations: bool,
-
-    /// Print the cues to stdout instead of writing a file.
-    #[arg(long = "print")]
-    pub print: bool,
 }
 
 pub fn run(args: &SubtitleArgs) -> Result<()> {
@@ -124,45 +120,36 @@ pub fn run(args: &SubtitleArgs) -> Result<()> {
     )?;
 
     if args.common.verbose {
+        // Timing summary belongs on stderr: it is diagnostic, and the point of
+        // the default mode is that stdout holds the SRT and nothing else.
+        let span = |c: Option<&subtitle::Cue>| {
+            c.map(|c| subtitle::srt_timestamp(c.start))
+                .unwrap_or_else(|| "-".into())
+        };
+        let last = result
+            .cues
+            .last()
+            .map(|c| subtitle::srt_timestamp(c.end))
+            .unwrap_or_else(|| "-".into());
         eprintln!(
-            "segments: {} ({} dropped)",
-            result.segments, result.empty_segments
+            "range   : {} - {} ({} cues from {} segments)",
+            span(result.cues.first()),
+            last,
+            result.cues.len(),
+            result.segments,
         );
-        eprintln!("cues    : {}", result.cues.len());
     }
 
     let srt = subtitle::to_srt(&result.cues);
-    if args.print {
-        print!("{srt}");
-        return Ok(());
+    match &args.output {
+        Some(path) => {
+            std::fs::write(path, &srt)
+                .with_context(|| format!("could not write {}", path.display()))?;
+            if args.common.verbose {
+                eprintln!("wrote   : {}", path.display());
+            }
+        }
+        None => print!("{srt}"),
     }
-
-    let out_path = args.output.clone().unwrap_or_else(|| {
-        let mut p = args.input.clone();
-        p.set_extension("srt");
-        p
-    });
-    std::fs::write(&out_path, &srt)
-        .with_context(|| format!("could not write {}", out_path.display()))?;
-
-    // A one-line summary, so a batch run shows something useful.
-    let stamp = |c: Option<&subtitle::Cue>| {
-        c.map(|c| subtitle::srt_timestamp(c.start))
-            .unwrap_or_else(|| "-".into())
-    };
-    let last = result
-        .cues
-        .last()
-        .map(|c| subtitle::srt_timestamp(c.end))
-        .unwrap_or_else(|| "-".into());
-    println!(
-        "{} -> {} ({} cues, {} segments, span {} - {})",
-        args.input.display(),
-        out_path.display(),
-        result.cues.len(),
-        result.segments,
-        stamp(result.cues.first()),
-        last
-    );
     Ok(())
 }

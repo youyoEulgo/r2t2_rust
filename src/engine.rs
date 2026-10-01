@@ -150,6 +150,41 @@ impl EngineConfig {
 }
 
 // --------------------------------------------------------------------------- //
+// logging
+// --------------------------------------------------------------------------- //
+
+/// Silence llama.cpp's and mtmd's own logging.
+///
+/// The libraries narrate model loading and every decode step, which is useful
+/// when something goes wrong and overwhelming otherwise -- well over a thousand
+/// lines for one short file. Their messages go to stderr and would not corrupt
+/// a piped result, but they bury this program's own diagnostics.
+///
+/// All three setters are needed. `libmtmd` keeps a logger separate from
+/// `libllama`, and `mtmd_helper_log_set` installs a third that wraps the other
+/// two -- silencing `libllama` alone still leaves the projector chattering.
+///
+/// Call once, before loading a model. `--verbose` simply never calls it.
+pub fn silence_llama_logging() {
+    unsafe {
+        sys::llama_log_set(Some(discard_log), std::ptr::null_mut());
+        sys::mtmd_log_set(Some(discard_log), std::ptr::null_mut());
+        sys::mtmd_helper_log_set(Some(discard_log), std::ptr::null_mut());
+    }
+}
+
+/// Swallow everything llama.cpp reports.
+///
+/// The signature is fixed by llama.cpp; `CONT` entries continue a previous
+/// message and carry no text worth keeping either.
+unsafe extern "C" fn discard_log(
+    _level: sys::ggml_log_level,
+    _text: *const std::os::raw::c_char,
+    _user_data: *mut std::os::raw::c_void,
+) {
+}
+
+// --------------------------------------------------------------------------- //
 // engine
 // --------------------------------------------------------------------------- //
 
