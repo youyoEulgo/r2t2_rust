@@ -10,13 +10,13 @@ no HuggingFace runtime — so model loading, audio encoding and decoding all
 happen in process. The only thing a deployment cannot bundle is the NVIDIA
 driver.
 
-Three binaries:
+One binary, one subcommand per mode:
 
 | | |
 |---|---|
-| `r2t2` | transcribe a file, one-shot or streaming |
-| `r2t2-server` | WebSocket service for live audio |
-| `r2t2-sub` | generate `.srt` subtitles from a video |
+| `r2t2 transcribe` | transcribe a file, one-shot or streaming |
+| `r2t2 serve` | WebSocket service for live audio |
+| `r2t2 subtitle` | generate `.srt` subtitles from a video |
 
 ## Why
 
@@ -42,7 +42,7 @@ startup and footprint difference.
 cargo build --release
 ```
 
-Produces `target/release/{r2t2,r2t2-server,r2t2-sub}`.
+Produces `target/release/r2t2`.
 
 Requirements:
 
@@ -52,7 +52,7 @@ Requirements:
 | CUDA toolkit | for the GPU backend, e.g. `/opt/cuda` |
 | NVIDIA driver | at runtime |
 | `libclang` | build only, for bindgen |
-| `ffmpeg` | only for `r2t2-sub` on non-WAV input |
+| `ffmpeg` | only for `r2t2 subtitle` on non-WAV input |
 
 The llama.cpp libraries are vendored in [`vendor/`](vendor/README.md) — no
 llama.cpp checkout is needed. Read that file before rebuilding them; it records
@@ -78,16 +78,16 @@ quantisations into one directory, which would otherwise silently pick one.
 ### Transcribe a file
 
 ```sh
-r2t2 -i audio.wav                        # to stdout
-r2t2 -i audio.wav -o transcript.txt
-r2t2 -i audio.wav -l English
-r2t2 -i audio.wav --stream --show-updates   # incremental output
+r2t2 transcribe -i audio.wav                        # to stdout
+r2t2 transcribe -i audio.wav -o transcript.txt
+r2t2 transcribe -i audio.wav -l English
+r2t2 transcribe -i audio.wav --stream --show-updates   # incremental output
 ```
 
 ### Live audio over WebSocket
 
 ```sh
-r2t2-server --gguf-dir checkpoints/gguf --port 8272
+r2t2 serve --gguf-dir checkpoints/gguf --port 8272
 ```
 
 Speaks the same protocol as the reference Python server, so existing clients
@@ -112,9 +112,9 @@ cargo run --release --example ws_client -- --audio resources/test.wav
 ### Generate subtitles
 
 ```sh
-r2t2-sub -i movie.mp4 -o movie.srt
-r2t2-sub -i movie.mp4 --print                  # cues to stdout
-r2t2-sub -i movie.mp4 -c "会话容器 WSLC"        # hotwords
+r2t2 subtitle -i movie.mp4 -o movie.srt
+r2t2 subtitle -i movie.mp4 --print                  # cues to stdout
+r2t2 subtitle -i movie.mp4 -c "会话容器 WSLC"        # hotwords
 ```
 
 Video is decoded through `ffmpeg`; WAV is read in process.
@@ -162,11 +162,21 @@ src/
   media.rs       ffmpeg-backed media decoding
   audio.rs       WAV decoding and resampling
   prompt.rs      chat-template prompt construction
-  bin/           the three binaries
+  model.rs       locating the model and projector GGUF pair
+  cli/
+    mod.rs       shared flags and subcommand dispatch
+    transcribe.rs
+    serve.rs
+    subtitle.rs
+  main.rs        entry point
 examples/
   ws_client.rs   protocol-level integration client
 vendor/          llama.cpp headers and prebuilt libraries
 ```
+
+Everything the three modes agree on — where the model lives, which language to
+expect, how much context to give llama.cpp — is defined once in `cli/mod.rs` and
+flattened into each subcommand, so the flags cannot drift apart between modes.
 
 ## Streaming algorithm
 

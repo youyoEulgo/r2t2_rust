@@ -11,15 +11,18 @@
 //! * [`subtitle`] -- VAD segments to timed cues to SRT.
 //! * [`quality`] -- repetition repair and hallucination detection.
 //! * [`media`] -- decoding video and audio input via ffmpeg.
+//! * [`model`] -- locating the language model and projector GGUF pair.
 //! * [`audio`] -- decoding WAV input to the mono 16 kHz the model expects.
 //! * [`prompt`] -- chat-template prompt construction.
 //!
-//! Three binaries build on this: `r2t2` is a file-oriented CLI, `r2t2-server`
-//! serves the WebSocket protocol, and `r2t2-sub` generates subtitles.
+//! One binary builds on this, with a subcommand per mode: `r2t2 transcribe`,
+//! `r2t2 serve`, and `r2t2 subtitle`.
 
 pub mod audio;
+pub mod cli;
 pub mod engine;
 pub mod media;
+pub mod model;
 pub mod prompt;
 pub mod quality;
 pub mod stream;

@@ -12,14 +12,6 @@ path = "src/lib.rs"
 name = "r2t2"
 path = "src/main.rs"
 
-[[bin]]
-name = "r2t2-server"
-path = "src/bin/server.rs"
-
-[[bin]]
-name = "r2t2-sub"
-path = "src/bin/subtitle.rs"
-
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

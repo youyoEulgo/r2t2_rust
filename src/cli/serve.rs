@@ -1,13 +1,13 @@
-//! WebSocket ASR service.
+//! `r2t2 serve` — live speech recognition over WebSocket.
 //!
-//! Speaks the same protocol as the reference Python server, so `ws_client.py`
-//! and any existing integration work unchanged:
+//! Speaks the same protocol as the reference Python server, so existing clients
+//! work unchanged:
 //!
-//! 1. The client sends a JSON header (`requestId` is required).
+//! 1. The client sends a JSON header; `requestId` is required.
 //! 2. Binary frames carry raw little-endian `int16` mono PCM at 16 kHz. The
 //!    first frame may instead be a whole WAV file.
-//! 3. The server replies with JSON per update, where `msg.text` is the **new**
-//!    text since the previous message -- concatenate them client-side.
+//! 3. `msg.text` in each reply is the **new** text since the last message;
+//!    concatenate them client-side.
 //! 4. A text frame equal to `YOUDAO_ONETIME_ASR_STREAM_EOS` ends the stream.
 //!
 //! # Concurrency
@@ -29,7 +29,6 @@
 //! limit and never produce a natural place to break the text.
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -43,16 +42,16 @@ use axum::{
     routing::get,
     Router,
 };
-use clap::Parser;
+use clap::Args;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
-use r2t2::audio::TARGET_SAMPLE_RATE;
-use r2t2::engine::EngineConfig;
-use r2t2::stream::{StreamEngine, StreamState};
-use r2t2::vad::{Segmenter, Sensitivity, VadConfig, FRAME_SAMPLES};
+use crate::audio::TARGET_SAMPLE_RATE;
+use crate::cli::CommonArgs;
+use crate::stream::{StreamEngine, StreamState};
+use crate::vad::{Segmenter, Sensitivity, VadConfig, FRAME_SAMPLES};
 
 /// Ends a stream. Must match the reference server byte for byte.
 const EOS: &str = "YOUDAO_ONETIME_ASR_STREAM_EOS";
@@ -74,6 +73,77 @@ const QUALITY_REPEAT_THRESHOLD: usize = 5;
 
 /// How long to wait for the next frame before giving up on a connection.
 const RECV_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Arguments for `r2t2 serve`.
+#[derive(Debug, Args)]
+pub struct ServeArgs {
+    #[command(flatten)]
+    pub common: CommonArgs,
+
+    /// Address to bind.
+    #[arg(long = "bind", value_name = "ADDR", default_value = "0.0.0.0")]
+    pub bind: String,
+
+    /// Port to listen on.
+    #[arg(short = 'p', long = "port", value_name = "PORT", default_value_t = 8272)]
+    pub port: u16,
+
+    /// VAD sensitivity: quality | lowbitrate | aggressive | veryaggressive.
+    #[arg(long = "vad-sensitivity", value_name = "LEVEL", default_value = "aggressive")]
+    pub vad_sensitivity: String,
+
+    /// Milliseconds of silence that end a segment.
+    #[arg(long = "vad-min-silence-ms", value_name = "MS", default_value_t = 400)]
+    pub vad_min_silence_ms: u64,
+
+    /// Milliseconds of speech that start one.
+    #[arg(long = "vad-min-speech-ms", value_name = "MS", default_value_t = 160)]
+    pub vad_min_speech_ms: u64,
+}
+
+/// Run the server. Blocks until interrupted.
+pub async fn run(args: ServeArgs) -> Result<()> {
+    let (model, mmproj) = args.common.resolve_model()?;
+    info!(model = %model.display(), mmproj = %mmproj.display(), "loading model");
+
+    let cfg = args.common.engine_config(model, mmproj);
+    let engine = StreamEngine::load(&cfg, MAX_NEW_TOKENS)
+        .context("failed to initialise the llama.cpp engine")?;
+    info!("model ready");
+
+    let vad_config = VadConfig {
+        sensitivity: Sensitivity::parse(&args.vad_sensitivity)?,
+        min_silence_frames: (args.vad_min_silence_ms / 20).max(1) as usize,
+        min_speech_frames: (args.vad_min_speech_ms / 20).max(1) as usize,
+        ..Default::default()
+    };
+    info!(?vad_config, "VAD configured");
+
+    let state = Arc::new(AppState {
+        engine: Mutex::new(engine),
+        vad_config,
+        context: args.common.context.clone(),
+    });
+
+    let app = Router::new()
+        .route("/health", get(|| async { "ok" }))
+        .route("/asr_stream_api_v1", get(handler_v1))
+        .with_state(state);
+
+    let addr: SocketAddr = format!("{}:{}", args.bind, args.port)
+        .parse()
+        .with_context(|| format!("invalid bind address {}:{}", args.bind, args.port))?;
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .with_context(|| format!("could not bind {addr}"))?;
+    info!(%addr, "listening: ws://{addr}/asr_stream_api_v1");
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .context("server error")?;
+    Ok(())
+}
 
 // --------------------------------------------------------------------------- //
 // wire types
@@ -166,106 +236,7 @@ struct AppState {
     context: String,
 }
 
-#[derive(Debug, Parser)]
-#[command(name = "r2t2-server", version, about = "WebSocket ASR service for Confucius4-R2T2")]
-struct Cli {
-    /// Directory holding exactly one `mmproj*.gguf` and one other `*.gguf`.
-    #[arg(long = "gguf-dir", value_name = "DIR", default_value = "checkpoints/gguf")]
-    gguf_dir: PathBuf,
-
-    /// Address to bind.
-    #[arg(long = "bind", value_name = "ADDR", default_value = "0.0.0.0")]
-    bind: String,
-
-    /// Port to listen on.
-    #[arg(short = 'p', long = "port", value_name = "PORT", default_value_t = 8272)]
-    port: u16,
-
-    /// Context / hotword hint applied to every request.
-    #[arg(short = 'c', long = "context", value_name = "TEXT", default_value = "")]
-    context: String,
-
-    /// Trailing tokens left unfixed when prompting.
-    #[arg(long = "unfixed-token-num", value_name = "N", default_value_t = 1)]
-    unfixed_token_num: usize,
-
-    /// VAD sensitivity: quality | lowbitrate | aggressive | veryaggressive.
-    #[arg(long = "vad-sensitivity", value_name = "LEVEL", default_value = "aggressive")]
-    vad_sensitivity: String,
-
-    /// Milliseconds of silence that close a segment.
-    #[arg(long = "vad-min-silence-ms", value_name = "MS", default_value_t = 400)]
-    vad_min_silence_ms: u64,
-
-    /// Milliseconds of speech that open one.
-    #[arg(long = "vad-min-speech-ms", value_name = "MS", default_value_t = 160)]
-    vad_min_speech_ms: u64,
-
-    /// Context size for llama.cpp.
-    #[arg(long = "n-ctx", value_name = "N", default_value_t = 8192)]
-    n_ctx: u32,
-
-    /// Run on CPU only.
-    #[arg(long = "cpu-only")]
-    cpu_only: bool,
-}
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
-        )
-        .init();
-
-    let cli = Cli::parse();
-    let (model, mmproj) = resolve_gguf(&cli.gguf_dir)?;
-    info!(model = %model.display(), mmproj = %mmproj.display(), "loading model");
-
-    let mut cfg = EngineConfig::new(&model, &mmproj);
-    cfg.n_ctx = cli.n_ctx;
-    cfg.use_gpu = !cli.cpu_only;
-    cfg.n_gpu_layers = if cli.cpu_only { 0 } else { -1 };
-
-    let engine = StreamEngine::load(&cfg, MAX_NEW_TOKENS)
-        .context("failed to initialise the llama.cpp engine")?;
-    info!("model ready");
-
-    let vad_config = VadConfig {
-        sensitivity: Sensitivity::parse(&cli.vad_sensitivity)?,
-        min_silence_frames: (cli.vad_min_silence_ms / 20).max(1) as usize,
-        min_speech_frames: (cli.vad_min_speech_ms / 20).max(1) as usize,
-        ..Default::default()
-    };
-    info!(?vad_config, "VAD configured");
-
-    let state = Arc::new(AppState {
-        engine: Mutex::new(engine),
-        vad_config,
-        context: cli.context.clone(),
-    });
-
-    let app = Router::new()
-        .route("/health", get(|| async { "ok" }))
-        .route("/asr_stream_api_v1", get(handler_v1))
-        .with_state(state);
-
-    let addr: SocketAddr = format!("{}:{}", cli.bind, cli.port)
-        .parse()
-        .with_context(|| format!("invalid bind address {}:{}", cli.bind, cli.port))?;
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .with_context(|| format!("could not bind {addr}"))?;
-    info!(%addr, "listening: ws://{addr}/asr_stream_api_v1");
-
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("server error")?;
-    Ok(())
-}
-
+/// Resolves when the process should stop accepting work.
 async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
     info!("shutting down");
@@ -444,7 +415,7 @@ async fn run_session(socket: WebSocket, state: Arc<AppState>) -> Result<()> {
                     let inc = take_increment(&mut emitted_len, &fixed);
                     if !inc.is_empty() {
                         let repaired =
-                            r2t2::quality::fix_repetitions(&inc, QUALITY_REPEAT_THRESHOLD);
+                            crate::quality::fix_repetitions(&inc, QUALITY_REPEAT_THRESHOLD);
                         new_text.push_str(&repaired);
                     }
                 }
@@ -618,35 +589,4 @@ fn decode_wav_bytes(bytes: &[u8]) -> Result<Vec<f32>> {
         out.push(mono[j] + (mono[j + 1] - mono[j]) * frac as f32);
     }
     Ok(out)
-}
-
-/// Find the paired GGUF files, same rule as the CLI.
-fn resolve_gguf(dir: &std::path::Path) -> Result<(PathBuf, PathBuf)> {
-    if !dir.is_dir() {
-        bail!("gguf directory not found: {}", dir.display());
-    }
-    let mut models = Vec::new();
-    let mut projectors = Vec::new();
-    for entry in std::fs::read_dir(dir)? {
-        let path = entry?.path();
-        if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("gguf")) {
-            let name = path.file_name().unwrap_or_default().to_string_lossy();
-            if name.starts_with("mmproj") {
-                projectors.push(path);
-            } else {
-                models.push(path);
-            }
-        }
-    }
-    models.sort();
-    projectors.sort();
-    match (models.len(), projectors.len()) {
-        (1, 1) => Ok((models.remove(0), projectors.remove(0))),
-        (0, _) => bail!("no language-model GGUF found in {}", dir.display()),
-        (_, 0) => bail!("no projector GGUF found in {}", dir.display()),
-        (m, p) => bail!(
-            "expected exactly one mmproj*.gguf and one other *.gguf in {}, found {m} model(s) and {p} projector(s)",
-            dir.display()
-        ),
-    }
 }

@@ -1,4 +1,4 @@
-//! Integration test client for `r2t2-server`.
+//! Integration test client for `r2t2 serve`.
 //!
 //! Streams a WAV file over the real WebSocket protocol, then EOS, and prints
 //! the transcript assembled from the incremental `msg.text` values. This
