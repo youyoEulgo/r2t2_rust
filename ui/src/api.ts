@@ -39,7 +39,6 @@ export interface JobOptions {
   max_seconds: number
   repeat_threshold: number
   keep_hallucinations: boolean
-  make_mkv: boolean
 }
 
 export const LANGUAGES = [
@@ -74,7 +73,6 @@ export const defaultOptions = (): JobOptions => ({
   max_seconds: 8,
   repeat_threshold: 5,
   keep_hallucinations: false,
-  make_mkv: true,
 })
 
 /** Human-readable progress line for a job. */
@@ -135,6 +133,22 @@ export async function submit(
   form.append('options', JSON.stringify(options))
 
   const res = await fetch('/api/jobs', { method: 'POST', body: form })
+  if (!res.ok) throw new Error(await readError(res))
+  return (await res.json()) as JobStatus
+}
+
+/** Combine a video and a subtitle file into one MKV. */
+export async function mux(
+  video: File,
+  subtitle: File,
+  language: string,
+): Promise<JobStatus> {
+  const form = new FormData()
+  form.append('video', video)
+  form.append('subtitle', subtitle)
+  form.append('language', language)
+
+  const res = await fetch('/api/mux', { method: 'POST', body: form })
   if (!res.ok) throw new Error(await readError(res))
   return (await res.json()) as JobStatus
 }

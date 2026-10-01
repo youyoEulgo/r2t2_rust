@@ -14,9 +14,9 @@ One binary, one subcommand per mode:
 
 | | |
 |---|---|
-| `r2t2 transcribe` | transcribe a file, one-shot or streaming |
+| `r2t2 transcribe` | a file to subtitles (SRT) or plain text (TXT) |
+| `r2t2 mux` | embed a subtitle file into a video, producing an MKV |
 | `r2t2 serve` | web interface, plus a WebSocket API for live audio |
-| `r2t2 subtitle` | generate `.srt` subtitles from a video |
 
 ## Why
 
@@ -52,7 +52,7 @@ Requirements:
 | CUDA toolkit | for the GPU backend, e.g. `/opt/cuda` |
 | NVIDIA driver | at runtime |
 | `libclang` | build only, for bindgen |
-| `ffmpeg` | only for `r2t2 subtitle` on non-WAV input |
+| `ffmpeg` | for non-WAV input, and for `r2t2 mux` |
 
 The llama.cpp libraries are vendored in [`vendor/`](vendor/README.md) — no
 llama.cpp checkout is needed. Read that file before rebuilding them; it records
@@ -60,16 +60,47 @@ why they were built locally and what that means for portability.
 
 ## Model weights
 
-Not included; download separately.
+Everything lives under one directory, following the XDG data specification:
 
-```sh
-# llama.cpp / GGUF weights — everything below uses these
-hf download netease-youdao/Confucius4-R2T2-GGUF \
-    --include "Confucius4-R2T2-Q8_0.gguf" "mmproj-Confucius4-R2T2-Q8_0.gguf" \
-    --local-dir checkpoints/gguf
+```text
+~/.local/share/r2t2/
+  models/     the GGUF pair
+  work/       uploads and results (the web interface)
 ```
 
-The GGUF directory must hold **exactly one** `mmproj*.gguf` and **exactly one**
+`$XDG_DATA_HOME` relocates the whole tree.
+
+On first use the program finds `models/` empty and **offers to download** the
+2.1 GB Q8_0 pair. Answer `y` and it fetches with a progress bar:
+
+```sh
+$ r2t2 transcribe -i movie.mp4
+No model found in /home/you/.local/share/r2t2/models.
+Download Confucius4-R2T2-Q8_0.gguf (about 2.1 GB) from HuggingFace now? [y/N]
+```
+
+It will not download unasked, and when stdin is not a terminal (a pipe, a
+script, CI) it skips the prompt entirely and prints the manual command instead,
+so an unattended run fails with instructions rather than hanging. `--yes`
+answers the prompt in advance.
+
+Behind a mirror, set `HF_ENDPOINT`:
+
+```sh
+HF_ENDPOINT=https://hf-mirror.com r2t2 transcribe -i movie.mp4
+```
+
+To place the weights elsewhere, pass `--gguf-dir`; an explicit path is trusted
+as-is and never triggers a download:
+
+```sh
+hf download netease-youdao/Confucius4-R2T2-GGUF \
+    --include "Confucius4-R2T2-Q8_0.gguf" "mmproj-Confucius4-R2T2-Q8_0.gguf" \
+    --local-dir /somewhere/gguf
+r2t2 transcribe -i movie.mp4 --gguf-dir /somewhere/gguf
+```
+
+The directory must hold **exactly one** `mmproj*.gguf` and **exactly one**
 other `*.gguf`. That rule catches the common mistake of dropping several
 quantisations into one directory, which would otherwise silently pick one.
 
@@ -92,12 +123,35 @@ program's messages. `--verbose` keeps it.
 
 ### Transcribe a file
 
+The default output is **SRT**, because it carries the timings and plain text can
+always be derived from it. `--format txt` drops the timings instead.
+
 ```sh
-r2t2 transcribe -i audio.wav                        # to stdout
-r2t2 transcribe -i audio.wav -o transcript.txt
-r2t2 transcribe -i audio.wav -l English
-r2t2 transcribe -i audio.wav --stream --show-updates   # incremental output
+r2t2 transcribe -i movie.mp4                          # SRT to stdout
+r2t2 transcribe -i movie.mp4 --format txt             # plain text
+r2t2 transcribe -i movie.mp4 -o movie.srt             # straight to a file
+r2t2 transcribe -i audio.wav -l English               # language hint
+r2t2 transcribe -i movie.mp4 -c "会话容器 WSLC"        # hotwords
+r2t2 transcribe -i audio.wav --format txt --stream    # chunked decoding
 ```
+
+Audio and video take the same path: the input is decoded to 16 kHz mono first,
+so a video container needs no separate handling.
+
+### Embed subtitles into a video
+
+```sh
+r2t2 mux --video movie.mp4 --subtitle movie.srt
+r2t2 mux --video movie.mp4 --subtitle corrected.srt --output movie.mkv
+```
+
+Video and audio are **stream-copied**, never re-encoded, so this takes about a
+second regardless of length. The subtitle track is tagged with `--language` so
+players can select it by name.
+
+This is a separate subcommand rather than a flag on `transcribe` because it does
+no recognition: the subtitle file may have been corrected by something else, and
+combining the two is an independent step.
 
 ### Web interface
 
@@ -106,9 +160,11 @@ r2t2 serve --gguf-dir checkpoints/gguf --port 8272
 # then open http://127.0.0.1:8272
 ```
 
-Upload an audio file and get a transcript and a `.txt`; upload a video and also
-get an `.srt` and a Matroska file with the subtitles muxed in. Video and audio
-are stream-copied into the MKV, so that step is fast and lossless.
+The **转写** panel turns a file into a `.txt` and an `.srt`. The **合并字幕**
+panel is separate: give it a video and a subtitle file — one you corrected
+elsewhere, for instance — and it produces an MKV with the subtitles embedded.
+Keeping them apart means a corrected subtitle can be re-muxed without
+re-running recognition.
 
 Language, hotwords, VAD sensitivity, cue length and the quality guards are all
 adjustable in the page.
@@ -158,16 +214,6 @@ Try it against the sample audio:
 cargo run --release --example ws_client -- --audio resources/test.wav
 ```
 
-### Generate subtitles
-
-```sh
-r2t2 subtitle -i movie.mp4 > movie.srt                # to stdout
-r2t2 subtitle -i movie.mp4 -o movie.srt               # or straight to a file
-r2t2 subtitle -i movie.mp4 -c "会话容器 WSLC"          # hotwords
-```
-
-Video is decoded through `ffmpeg`; WAV is read in process.
-
 Timestamps come from **voice activity detection, not the model**. The model
 provides words, the detector provides timing: it segments the whole file first,
 then each segment is transcribed independently. This also means a segment's
@@ -212,12 +258,13 @@ src/
   audio.rs       WAV decoding and resampling
   prompt.rs      chat-template prompt construction
   model.rs       locating the model and projector GGUF pair
+  paths.rs       the data directory, and fetching the model when missing
   web.rs         web interface: static assets, upload API, background jobs
   cli/
     mod.rs       shared flags and subcommand dispatch
     transcribe.rs
+    mux.rs
     serve.rs
-    subtitle.rs
   main.rs        entry point
 ui/              frontend (Bun + Vite + Vue 3); dist/ is embedded at build time
 examples/

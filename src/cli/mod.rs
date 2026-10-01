@@ -9,8 +9,8 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
 
+pub mod mux;
 pub mod serve;
-pub mod subtitle;
 pub mod transcribe;
 
 /// Transcribe speech, serve it live, or generate subtitles.
@@ -50,16 +50,26 @@ pub enum Command {
     /// Serve live audio over WebSocket.
     Serve(serve::ServeArgs),
 
-    /// Generate an .srt subtitle file from a video or audio file.
-    Subtitle(subtitle::SubtitleArgs),
+    /// Combine a video and a subtitle file into one Matroska file.
+    Mux(mux::MuxArgs),
 }
 
 /// Settings every mode shares.
 #[derive(Debug, Args)]
 pub struct CommonArgs {
     /// Directory holding exactly one `mmproj*.gguf` and one other `*.gguf`.
-    #[arg(long = "gguf-dir", value_name = "DIR", default_value = "checkpoints/gguf")]
-    pub gguf_dir: PathBuf,
+    ///
+    /// Defaults to `~/.local/share/r2t2/models`, which is where the program
+    /// offers to download the model on first use.
+    #[arg(long = "gguf-dir", value_name = "DIR")]
+    pub gguf_dir: Option<PathBuf>,
+
+    /// Download the model without asking, if it is missing.
+    ///
+    /// The prompt is skipped automatically when stdin is not a terminal, so
+    /// unattended runs fail with instructions rather than hanging.
+    #[arg(long = "yes", short = 'y')]
+    pub assume_yes: bool,
 
     /// Language hint, e.g. `Chinese` or `English`.
     #[arg(short = 'l', long = "language", value_name = "LANG", default_value = "Chinese")]
@@ -127,7 +137,10 @@ impl CommonArgs {
             crate::engine::silence_llama_logging();
         }
 
-        let (model, mmproj) = crate::model::resolve_gguf(&self.gguf_dir)?;
+        // Resolves the default directory, offering a download when it is
+        // empty; an explicit --gguf-dir is trusted as-is.
+        let dir = crate::paths::resolve_models(self.gguf_dir.as_deref(), self.assume_yes)?;
+        let (model, mmproj) = crate::model::resolve_gguf(&dir)?;
         if self.verbose {
             eprintln!("model  : {}", model.display());
             eprintln!("mmproj : {}", mmproj.display());

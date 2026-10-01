@@ -107,8 +107,7 @@ pub struct ServeArgs {
 
     /// Where uploaded files and their results are kept.
     ///
-    /// Defaults to a directory under the system temporary directory, which is
-    /// cleared on reboot. Point this somewhere persistent to keep results.
+    /// Defaults to `~/.local/share/r2t2/work`, so results survive a reboot.
     #[arg(long = "work-dir", value_name = "DIR")]
     pub work_dir: Option<PathBuf>,
 }
@@ -142,7 +141,7 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         let work_dir = args
             .work_dir
             .clone()
-            .unwrap_or_else(|| std::env::temp_dir().join("r2t2-web"));
+            .unwrap_or_else(crate::paths::work_dir);
         std::fs::create_dir_all(&work_dir)
             .with_context(|| format!("could not create {}", work_dir.display()))?;
 

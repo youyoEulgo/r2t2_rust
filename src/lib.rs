@@ -12,6 +12,7 @@
 //! * [`quality`] -- repetition repair and hallucination detection.
 //! * [`media`] -- decoding video and audio input via ffmpeg.
 //! * [`model`] -- locating the language model and projector GGUF pair.
+//! * [`paths`] -- the data directory, and fetching the model when missing.
 //! * [`web`] -- the web interface: static assets and the upload API.
 //! * [`audio`] -- decoding WAV input to the mono 16 kHz the model expects.
 //! * [`prompt`] -- chat-template prompt construction.
@@ -24,6 +25,7 @@ pub mod cli;
 pub mod engine;
 pub mod media;
 pub mod model;
+pub mod paths;
 pub mod prompt;
 pub mod quality;
 pub mod stream;

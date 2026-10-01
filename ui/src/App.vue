@@ -6,6 +6,7 @@ import {
   defaultOptions,
   describe,
   formatBytes,
+  mux,
   progress,
   submit,
   watch,
@@ -13,6 +14,47 @@ import {
   type JobOptions,
   type JobStatus,
 } from './api'
+
+/** Which panel is open. Transcribing and muxing are independent jobs. */
+const tab = ref<'transcribe' | 'mux'>('transcribe')
+
+// ---- mux panel state ----
+const muxVideo = ref<File | null>(null)
+const muxSubtitle = ref<File | null>(null)
+const muxLanguage = ref('Chinese')
+const muxJob = ref<JobStatus | null>(null)
+const muxError = ref<string | null>(null)
+const muxBusy = ref(false)
+
+const canMux = computed(() => !!muxVideo.value && !!muxSubtitle.value && !muxBusy.value)
+
+function pickMuxVideo(f: File | null) {
+  if (f) muxVideo.value = f
+}
+function pickMuxSubtitle(f: File | null) {
+  if (f) muxSubtitle.value = f
+}
+
+async function runMux() {
+  if (!muxVideo.value || !muxSubtitle.value) return
+  muxBusy.value = true
+  muxError.value = null
+  muxJob.value = null
+  try {
+    muxJob.value = await mux(muxVideo.value, muxSubtitle.value, muxLanguage.value)
+  } catch (e) {
+    muxError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    muxBusy.value = false
+  }
+}
+
+function resetMux() {
+  muxVideo.value = null
+  muxSubtitle.value = null
+  muxJob.value = null
+  muxError.value = null
+}
 
 const options = reactive<JobOptions>(defaultOptions())
 const file = ref<File | null>(null)
@@ -90,7 +132,7 @@ function copyTranscript() {
 const artifactLabel: Record<Artifact['kind'], string> = {
   txt: '纯文本',
   srt: '字幕 (SRT)',
-  mkv: '带字幕视频 (MKV)',
+  mkv: '内嵌字幕视频 (MKV)',
 }
 
 onBeforeUnmount(() => controller?.abort())
@@ -106,8 +148,17 @@ onBeforeUnmount(() => controller?.abort())
       </p>
     </header>
 
-    <!-- ---------- input ---------- -->
-    <section class="panel">
+    <nav class="tabs">
+      <button :class="{ active: tab === 'transcribe' }" @click="tab = 'transcribe'">
+        转写
+      </button>
+      <button :class="{ active: tab === 'mux' }" @click="tab = 'mux'">
+        合并字幕
+      </button>
+    </nav>
+
+    <!-- ---------- transcribe ---------- -->
+    <section v-show="tab === 'transcribe'" class="panel">
       <div
         class="drop"
         :class="{ dragging, has: !!file }"
@@ -196,10 +247,6 @@ onBeforeUnmount(() => controller?.abort())
           <input id="halluc" type="checkbox" v-model="options.keep_hallucinations" />
           <label for="halluc">保留疑似幻觉片段</label>
         </div>
-        <div class="check-row">
-          <input id="mkv" type="checkbox" v-model="options.make_mkv" :disabled="!isVideo" />
-          <label for="mkv">生成内嵌字幕的 MKV</label>
-        </div>
       </div>
 
       <div class="actions">
@@ -212,8 +259,74 @@ onBeforeUnmount(() => controller?.abort())
       <p v-if="error" class="error">{{ error }}</p>
     </section>
 
+    <!-- ---------- mux ---------- -->
+    <template v-if="tab === 'mux'">
+      <section class="panel">
+        <p class="lead tight">
+          把已有的字幕文件内嵌进视频。视频与音频直接复制，不重新编码，
+          因此无论多长都只需数秒。
+        </p>
+
+        <div class="grid">
+          <div>
+            <label>视频文件</label>
+            <label class="file-slot" :class="{ has: !!muxVideo }">
+              <input
+                type="file"
+                accept="video/*,.mp4,.mkv,.mov,.avi,.webm"
+                @change="pickMuxVideo(($event.target as HTMLInputElement).files?.[0] ?? null)"
+              />
+              <span v-if="muxVideo">{{ muxVideo.name }}</span>
+              <span v-else class="muted">选择视频</span>
+            </label>
+          </div>
+          <div>
+            <label>字幕文件 (SRT)</label>
+            <label class="file-slot" :class="{ has: !!muxSubtitle }">
+              <input
+                type="file"
+                accept=".srt,text/plain"
+                @change="pickMuxSubtitle(($event.target as HTMLInputElement).files?.[0] ?? null)"
+              />
+              <span v-if="muxSubtitle">{{ muxSubtitle.name }}</span>
+              <span v-else class="muted">选择 SRT</span>
+            </label>
+          </div>
+          <div>
+            <label for="muxlang">字幕语言标记</label>
+            <select id="muxlang" v-model="muxLanguage">
+              <option v-for="l in LANGUAGES" :key="l" :value="l">{{ l }}</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button class="primary" :disabled="!canMux" @click="runMux">
+            {{ muxBusy ? '合并中…' : '合并为 MKV' }}
+          </button>
+          <button v-if="muxVideo || muxJob" :disabled="muxBusy" @click="resetMux">清空</button>
+        </div>
+
+        <p v-if="muxError" class="error">{{ muxError }}</p>
+
+        <template v-if="muxJob && muxJob.stage === 'done'">
+          <h3>下载</h3>
+          <ul class="artifacts">
+            <li v-for="a in muxJob.artifacts" :key="a.kind">
+              <a :href="a.url" :download="a.filename">
+                <span class="kind">{{ artifactLabel[a.kind] ?? a.kind }}</span>
+                <span class="name">{{ a.filename }}</span>
+                <span class="muted">{{ formatBytes(a.bytes) }}</span>
+              </a>
+            </li>
+          </ul>
+        </template>
+        <p v-if="muxJob && muxJob.error" class="error">{{ muxJob.error }}</p>
+      </section>
+    </template>
+
     <!-- ---------- progress ---------- -->
-    <section v-if="job" class="panel">
+    <section v-if="tab === 'transcribe' && job" class="panel">
       <div class="status">
         <span :class="['dot', job.stage]"></span>
         <span>{{ describe(job) }}</span>
@@ -249,8 +362,8 @@ onBeforeUnmount(() => controller?.abort())
 
     <footer>
       <p class="muted">
-        音频 → TXT；视频 → SRT 与内嵌字幕的 MKV。字幕时间来自语音活动检测，
-        因此不会重叠。
+        转写输出 TXT 与 SRT，字幕时间来自语音活动检测，因此不会重叠。
+        需要成片时用「合并字幕」把 SRT 内嵌进视频。
       </p>
     </footer>
   </div>
@@ -262,6 +375,29 @@ onBeforeUnmount(() => controller?.abort())
 header h1 { margin: 0 0 0.25rem; font-size: 1.6rem; letter-spacing: -0.01em; }
 header h1 .sub { color: var(--muted); font-weight: 400; font-size: 1.1rem; }
 .lead { margin: 0 0 2rem; color: var(--muted); max-width: 62ch; }
+
+/* ---------- tabs ---------- */
+.tabs { display: flex; gap: 0.25rem; margin-bottom: 0.75rem; }
+.tabs button {
+  background: none; border: none; border-bottom: 2px solid transparent;
+  border-radius: 0; padding: 0.5rem 0.9rem; color: var(--muted);
+}
+.tabs button:hover { background: none; color: var(--text); }
+.tabs button.active { color: var(--text); border-bottom-color: var(--accent); }
+
+.lead.tight { margin-bottom: 1rem; font-size: 0.9rem; }
+
+/* A file input styled as a slot, for the mux panel. */
+.file-slot {
+  position: relative; display: block; margin: 0; cursor: pointer;
+  border: 1.5px dashed var(--line); border-radius: 8px;
+  padding: 0.75rem; text-align: center; font-size: 0.9rem;
+  color: var(--text); transition: border-color 0.15s;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.file-slot:hover { border-color: var(--accent); }
+.file-slot.has { border-style: solid; border-color: var(--accent-dim); }
+.file-slot input[type="file"] { position: absolute; width: 1px; height: 1px; opacity: 0; }
 
 .panel {
   background: var(--panel);

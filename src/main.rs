@@ -3,9 +3,10 @@
 //! Three modes, one binary:
 //!
 //! ```text
-//! r2t2 transcribe -i audio.wav
-//! r2t2 serve      --port 8272
-//! r2t2 subtitle   -i movie.mp4 -o movie.srt
+//! r2t2 transcribe -i audio.wav              # subtitles on stdout
+//! r2t2 transcribe -i movie.mp4 --format txt # plain text
+//! r2t2 serve                                 # web interface on :8272
+//! r2t2 mux --video movie.mp4 --subtitle movie.srt
 //! ```
 //!
 //! The modes share the model, the engine and the shared flags; only the work
@@ -25,7 +26,7 @@ fn main() -> ExitCode {
     // are synchronous and report through stderr directly.
     let result: Result<()> = match cli.command {
         Command::Transcribe(args) => r2t2::cli::transcribe::run(&args),
-        Command::Subtitle(args) => r2t2::cli::subtitle::run(&args),
+        Command::Mux(args) => r2t2::cli::mux::run(&args),
         Command::Serve(args) => {
             // The log filter comes from RUST_LOG, falling back to `info`.
             // `--verbose` raises the floor to `debug` so the server's own

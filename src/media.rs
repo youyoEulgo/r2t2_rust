@@ -49,6 +49,50 @@ pub fn has_video_stream(path: &Path) -> Result<bool> {
     Ok(!String::from_utf8_lossy(&out.stdout).trim().is_empty())
 }
 
+/// Summarise the streams in a file, e.g. `"video + audio + 1 subtitle"`.
+///
+/// Used to report what a mux produced, so a success is verifiable at a glance
+/// rather than only by opening the file.
+pub fn stream_summary(path: &Path) -> Result<String> {
+    let out = Command::new("ffprobe")
+        .args([
+            "-v", "error",
+            "-show_entries", "stream=codec_type",
+            "-of", "csv=p=0",
+        ])
+        .arg(path)
+        .output()
+        .context("could not run ffprobe")?;
+    if !out.status.success() {
+        bail!("ffprobe could not read {}", path.display());
+    }
+
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut video = 0;
+    let mut audio = 0;
+    let mut subs = 0;
+    for line in text.lines() {
+        match line.trim() {
+            "video" => video += 1,
+            "audio" => audio += 1,
+            "subtitle" => subs += 1,
+            _ => {}
+        }
+    }
+
+    let mut parts = Vec::new();
+    if video > 0 {
+        parts.push("video".to_string());
+    }
+    if audio > 0 {
+        parts.push("audio".to_string());
+    }
+    if subs > 0 {
+        parts.push(format!("{subs} subtitle{}", if subs == 1 { "" } else { "s" }));
+    }
+    Ok(parts.join(" + "))
+}
+
 /// Mux an SRT file into a copy of `video`, writing Matroska to `out`.
 ///
 /// The video and audio streams are **copied**, not re-encoded, so this is fast

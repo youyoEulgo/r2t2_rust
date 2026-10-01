@@ -54,7 +54,6 @@ pub enum Stage {
     Queued,
     Decoding,
     Transcribing,
-    Muxing,
     Done,
     Failed,
 }
@@ -112,9 +111,6 @@ pub struct JobOptions {
     pub repeat_threshold: usize,
     #[serde(default)]
     pub keep_hallucinations: bool,
-    /// Produce an MKV with the subtitles muxed in. Video only.
-    #[serde(default = "default_true")]
-    pub make_mkv: bool,
 }
 
 fn default_language() -> String {
@@ -137,9 +133,6 @@ fn default_max_seconds() -> f64 {
 }
 fn default_repeat_threshold() -> usize {
     5
-}
-fn default_true() -> bool {
-    true
 }
 
 impl JobOptions {
@@ -271,6 +264,9 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/jobs", post(create_job))
         .route("/api/jobs/{id}", get(job_status))
         .route("/api/jobs/{id}/files/{kind}", get(job_file))
+        // Muxing is separate from transcription: it takes a video and a
+        // subtitle file, often corrected elsewhere, and combines them.
+        .route("/api/mux", post(create_mux))
         // axum caps request bodies at 2 MB by default, well under a video.
         .layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES))
 }
@@ -368,7 +364,6 @@ async fn create_job(
         max_seconds: default_max_seconds(),
         repeat_threshold: default_repeat_threshold(),
         keep_hallucinations: false,
-        make_mkv: true,
     };
     let mut saved: Option<(PathBuf, String)> = None;
 
@@ -482,7 +477,6 @@ async fn process(
     };
 
     // ---- inspect the input ------------------------------------------------
-    let is_video = media::has_video_stream(input).unwrap_or(false);
     let stem = Path::new(original_name)
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
@@ -529,19 +523,10 @@ async fn process(
     let txt_path = srt_path.with_extension("txt");
     std::fs::write(&txt_path, format!("{transcript}\n")).context("could not write the transcript")?;
 
-    let mut artifacts = vec![
+    let artifacts = vec![
         artifact("txt", &txt_path, format!("{stem}.txt"))?,
         artifact("srt", &srt_path, format!("{stem}.srt"))?,
     ];
-
-    // ---- mux --------------------------------------------------------------
-    if is_video && options.make_mkv {
-        set(Stage::Muxing);
-        let mkv_path = srt_path.with_extension("mkv");
-        let lang = options.language().unwrap_or("und");
-        media::mux_subtitles(input, &srt_path, &mkv_path, lang)?;
-        artifacts.push(artifact("mkv", &mkv_path, format!("{stem}.mkv"))?);
-    }
 
     web.jobs.update(id, |job| {
         job.status.stage = Stage::Done;
@@ -683,6 +668,112 @@ async fn job_file(
         )
         .body(Body::from(data))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()))
+}
+
+/// Combine an uploaded video and subtitle file into one MKV.
+///
+/// Synchronous, unlike transcription: remuxing stream-copies both inputs, so
+/// it finishes in about a second even for a feature-length file and a job id
+/// would only add latency.
+async fn create_mux(
+    State(app): State<Arc<AppState>>,
+    mut form: Multipart,
+) -> Result<Response, ApiError> {
+    let web = app.web.clone().ok_or_else(|| {
+        ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "web interface is not enabled")
+    })?;
+
+    let id = format!("{:08x}", web.next_id.fetch_add(1, Ordering::Relaxed));
+    let dir = web.work_dir.join(&id);
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| ApiError::internal(format!("could not create work directory: {e}")))?;
+
+    let mut video: Option<(PathBuf, String)> = None;
+    let mut subtitle: Option<(PathBuf, String)> = None;
+    let mut language = "Chinese".to_string();
+
+    while let Some(field) = form.next_field().await.map_err(|e| {
+        ApiError::new(StatusCode::BAD_REQUEST, format!("malformed upload: {e}"))
+    })? {
+        let name = field.name().unwrap_or_default().to_string();
+        match name.as_str() {
+            "video" | "subtitle" => {
+                let filename = field
+                    .file_name()
+                    .map(sanitize_filename)
+                    .unwrap_or_else(|| "input.bin".to_string());
+                let data = field.bytes().await.map_err(|e| {
+                    ApiError::new(StatusCode::BAD_REQUEST, format!("could not read upload: {e}"))
+                })?;
+                if data.is_empty() {
+                    return Err(ApiError::new(
+                        StatusCode::BAD_REQUEST,
+                        format!("the {name} upload is empty"),
+                    ));
+                }
+                let path = dir.join(&filename);
+                tokio::fs::write(&path, &data)
+                    .await
+                    .map_err(|e| ApiError::internal(format!("could not save upload: {e}")))?;
+                if name == "video" {
+                    video = Some((path, filename));
+                } else {
+                    subtitle = Some((path, filename));
+                }
+            }
+            "language" => {
+                language = field.text().await.unwrap_or_else(|_| "Chinese".to_string());
+            }
+            _ => {}
+        }
+    }
+
+    let (video_path, video_name) = video.ok_or_else(|| {
+        ApiError::new(StatusCode::BAD_REQUEST, "no video file in the request")
+    })?;
+    let (subtitle_path, _) = subtitle.ok_or_else(|| {
+        ApiError::new(StatusCode::BAD_REQUEST, "no subtitle file in the request")
+    })?;
+
+    if !media::ffmpeg_available() {
+        return Err(ApiError::internal("ffmpeg is not available on the server"));
+    }
+
+    let stem = Path::new(&video_name)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "output".to_string());
+    let out_path = dir.join(format!("{stem}.mkv"));
+
+    media::mux_subtitles(&video_path, &subtitle_path, &out_path, &language)
+        .map_err(|e| ApiError::internal(format!("{e:#}")))?;
+
+    let artifact = artifact("mkv", &out_path, format!("{stem}.mkv"))
+        .map_err(|e| ApiError::internal(format!("{e:#}")))?;
+
+    let status = JobStatus {
+        id: id.clone(),
+        stage: Stage::Done,
+        queued_behind: 0,
+        segments_done: 0,
+        segments_total: None,
+        duration_secs: None,
+        error: None,
+        transcript: None,
+        artifacts: vec![Artifact {
+            url: format!("/api/jobs/{id}/files/mkv"),
+            ..artifact
+        }],
+    };
+    web.jobs.insert(
+        id,
+        Job {
+            status: status.clone(),
+            dir,
+        },
+    );
+    Ok(Json(status).into_response())
 }
 
 // --------------------------------------------------------------------------- //
