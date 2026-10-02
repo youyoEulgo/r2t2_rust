@@ -61,6 +61,15 @@ pub fn work_dir() -> PathBuf {
     data_dir().join("work")
 }
 
+/// The configuration file.
+///
+/// One file rather than a directory: the settings are few, they belong to the
+/// person running the program rather than to any one stream, and a file is
+/// easier to edit by hand or copy between machines than a database would be.
+pub fn config_file() -> PathBuf {
+    data_dir().join("config.toml")
+}
+
 /// `$HOME`, or `None` when it is not set.
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")

@@ -30,6 +30,12 @@ enum Update {
         #[serde(default)]
         latest: String,
     },
+    /// The caption appearance changed.
+    Caption {
+        lines: usize,
+        chars: usize,
+        size: usize,
+    },
     Subtitle {
         text: String,
         delta: String,
@@ -86,6 +92,9 @@ async fn main() -> Result<()> {
                 // The running text, so it is obvious whether deltas are
                 // accumulating correctly.
                 let _ = text;
+            }
+            Ok(Update::Caption { lines, chars, size }) => {
+                println!("-- caption appearance: {lines} lines, {chars} chars, {size}px");
             }
             Err(err) => eprintln!("unrecognised message ({err}): {raw}"),
         }

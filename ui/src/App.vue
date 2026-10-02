@@ -3,6 +3,8 @@ import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import {
   LANGUAGES,
   liveStatus,
+  captionConfig,
+  saveCaptionConfig,
   VAD_SENSITIVITIES,
   defaultOptions,
   describe,
@@ -15,6 +17,7 @@ import {
   type JobOptions,
   type JobStatus,
   type LiveStatus,
+  type CaptionConfig,
 } from './api'
 
 /** Which panel is open. Transcribing and muxing are independent jobs. */
@@ -44,12 +47,14 @@ watch(tab, (t) => {
   }
   if (t === 'live') {
     refreshLive()
+    void loadCaption()
     liveTimer = window.setInterval(refreshLive, 2000)
   }
 })
 
 onBeforeUnmount(() => {
   if (liveTimer !== undefined) clearInterval(liveTimer)
+  if (savedTimer !== undefined) clearTimeout(savedTimer)
 })
 
 /** The RTMP URL to paste into OBS, built from where the page is served. */
@@ -61,6 +66,32 @@ const rtmpUrl = computed(() => {
 
 /** The caption overlay URL, for an OBS browser source. */
 const captionUrl = computed(() => `${location.origin}/live`)
+
+// ---- caption appearance ----
+const caption = ref<CaptionConfig | null>(null)
+const captionSaved = ref(false)
+let savedTimer: number | undefined
+
+async function loadCaption() {
+  try {
+    caption.value = await captionConfig()
+  } catch (e) {
+    liveError.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+/** Persist the caption settings; the overlay updates over its own socket. */
+async function saveCaption() {
+  if (!caption.value) return
+  try {
+    caption.value = await saveCaptionConfig({ ...caption.value })
+    captionSaved.value = true
+    if (savedTimer !== undefined) clearTimeout(savedTimer)
+    savedTimer = window.setTimeout(() => (captionSaved.value = false), 1500)
+  } catch (e) {
+    liveError.value = e instanceof Error ? e.message : String(e)
+  }
+}
 
 // ---- mux panel state ----
 const muxVideo = ref<File | null>(null)
@@ -370,6 +401,48 @@ onBeforeUnmount(() => controller?.abort())
             <code>?size=64&amp;transparent=1</code>。
           </p>
 
+          <h3>字幕外观</h3>
+          <div v-if="caption" class="grid advanced">
+            <div>
+              <label for="cap-lines">显示行数</label>
+              <input id="cap-lines" type="number" min="1" max="5" v-model.number="caption.lines" />
+            </div>
+            <div>
+              <label for="cap-chars">每行字数</label>
+              <input id="cap-chars" type="number" min="4" max="120" v-model.number="caption.chars" />
+              <p class="hint tight">两个英文字母算一个字。</p>
+            </div>
+            <div>
+              <label for="cap-size">字号 (px)</label>
+              <input id="cap-size" type="number" min="8" max="200" v-model.number="caption.size" />
+            </div>
+            <div>
+              <label for="cap-color">文字颜色</label>
+              <input id="cap-color" type="color" v-model="caption.color" />
+            </div>
+            <div>
+              <label for="cap-bottom">距底部</label>
+              <input id="cap-bottom" type="text" v-model="caption.bottom" />
+            </div>
+            <div class="check-row">
+              <input id="cap-transparent" type="checkbox" v-model="caption.transparent" />
+              <label for="cap-transparent">不显示背景条</label>
+            </div>
+          </div>
+          <p v-if="caption && !caption.transparent" class="hint">
+            背景色：<code>{{ caption.background }}</code>
+          </p>
+
+          <div class="actions">
+            <button class="primary" @click="saveCaption">保存外观</button>
+            <span v-if="captionSaved" class="saved">已保存</span>
+          </div>
+          <p class="hint">
+            保存在
+            <code>~/.local/share/r2t2/config.toml</code>。
+            已打开的字幕画面会立即应用，无需刷新 OBS。
+          </p>
+
           <h3>当前字幕</h3>
           <pre class="transcript">{{ live.latest || '（尚未收到语音）' }}</pre>
         </template>
@@ -603,6 +676,9 @@ h3 { font-size: 0.9rem; color: var(--muted); font-weight: 600; margin: 1.5rem 0 
 .artifacts .name { flex: 1; font-size: 0.9rem; }
 
 .error { color: var(--err); margin: 0.75rem 0 0; font-size: 0.9rem; }
+
+.hint.tight { margin: 0.2rem 0 0; font-size: 0.78rem; }
+.saved { color: var(--ok); font-size: 0.85rem; }
 
 /* A path or URL with its own copy button. */
 .copy-row {

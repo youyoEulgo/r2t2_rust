@@ -24,6 +24,26 @@ use tracing::{debug, info, warn};
 use crate::rtmp::{IngestEvent, IngestHandle};
 use crate::stream::StreamEngine;
 
+/// What is sent to a viewer over `/ws/subtitles`.
+///
+/// Two kinds of message share one connection: captions as they are recognised,
+/// and appearance changes when the console edits the configuration. Keeping
+/// them together means an overlay that is already open picks up a new setting
+/// without being reloaded.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum ViewerMessage {
+    /// Recognition output.
+    Subtitle {
+        text: String,
+        delta: String,
+        reset: bool,
+        at_ms: u64,
+    },
+    /// The caption appearance changed.
+    Caption(crate::config::CaptionConfig),
+}
+
 /// A subtitle line, as published to viewers.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SubtitleLine {
@@ -40,7 +60,7 @@ pub struct SubtitleLine {
 /// Shared handle for viewers to subscribe to subtitles.
 #[derive(Clone)]
 pub struct LiveSubtitles {
-    tx: broadcast::Sender<SubtitleLine>,
+    tx: broadcast::Sender<ViewerMessage>,
     state: Arc<Mutex<LiveState>>,
     enabled: bool,
 }
@@ -54,8 +74,13 @@ struct LiveState {
 }
 
 impl LiveSubtitles {
-    pub fn subscribe(&self) -> broadcast::Receiver<SubtitleLine> {
+    pub fn subscribe(&self) -> broadcast::Receiver<ViewerMessage> {
         self.tx.subscribe()
+    }
+
+    /// Tell every open viewer that the caption appearance changed.
+    pub fn broadcast_caption(&self, caption: crate::config::CaptionConfig) {
+        let _ = self.tx.send(ViewerMessage::Caption(caption));
     }
 
     /// The most recent line, so a late viewer is not left blank.
@@ -195,7 +220,7 @@ pub fn spawn(
                                     task_handle.state.lock().await.latest.clone();
                                 if fixed.len() > previous.len() {
                                     let delta = fixed[previous.len()..].to_string();
-                                    let line = SubtitleLine {
+                                    let line = ViewerMessage::Subtitle {
                                         text: fixed.clone(),
                                         delta,
                                         reset: false,

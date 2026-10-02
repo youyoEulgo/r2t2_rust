@@ -27,6 +27,7 @@
 
 pub mod audio;
 pub mod cli;
+pub mod config;
 pub mod engine;
 pub mod live;
 pub mod media;

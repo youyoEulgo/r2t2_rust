@@ -42,10 +42,10 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         State,
     },
-    Json,
-    response::IntoResponse,
+    http::StatusCode,
+    response::{IntoResponse, Response},
     routing::get,
-    Router,
+    Json, Router,
 };
 use clap::Args;
 use futures_util::{SinkExt, StreamExt};
@@ -138,6 +138,12 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     let (model, mmproj) = args.common.resolve_model()?;
     info!(model = %model.display(), mmproj = %mmproj.display(), "loading model");
 
+    // Create the configuration file if it is not there, so there is something
+    // to edit and the console has something to change.
+    if let Err(err) = crate::config::Config::ensure_file(&crate::paths::config_file()) {
+        warn!(error = %err, "could not create the configuration file; defaults will be used");
+    }
+
     let cfg = args.common.engine_config(model.clone(), mmproj.clone());
     // Exactly one model in the process. The weights are several gigabytes and
     // a consumer GPU holds one copy, so every path — WebSocket ingest, RTMP
@@ -216,7 +222,12 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         .route("/asr_stream_api_v1", get(handler_v1))
         // Viewers subscribe here; the live pipeline publishes to it.
         .route("/ws/subtitles", get(handler_subtitles))
-        .route("/api/live", get(handler_live_status));
+        .route("/api/live", get(handler_live_status))
+        // The caption appearance, shared by the console and the overlay.
+        .route(
+            "/api/live/caption",
+            get(handler_caption_get).post(handler_caption_set),
+        );
     if state.web.is_some() {
         app = app.merge(crate::web::routes());
     }
@@ -360,6 +371,36 @@ async fn handler_live_status(State(app): State<Arc<AppState>>) -> impl IntoRespo
     }))
 }
 
+/// Report the caption appearance.
+async fn handler_caption_get() -> impl IntoResponse {
+    Json(crate::config::Config::load_default().caption)
+}
+
+/// Replace the caption appearance and save it.
+///
+/// Saved immediately rather than on shutdown: the point of a config file is
+/// that an edit survives, and a crash should not cost someone their settings.
+async fn handler_caption_set(
+    State(app): State<Arc<AppState>>,
+    Json(new): Json<crate::config::CaptionConfig>,
+) -> Response {
+    let mut cfg = crate::config::Config::load_default();
+    cfg.caption = new.sanitized();
+
+    let path = crate::paths::config_file();
+    match cfg.save(&path) {
+        Ok(()) => {
+            app.live.as_ref().map(|l| l.broadcast_caption(cfg.caption.clone()));
+            Json(cfg.caption).into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("could not save the configuration: {err:#}"),
+        )
+            .into_response(),
+    }
+}
+
 /// Subscribe to the live subtitle stream.
 ///
 /// Read-only: a viewer sends nothing. On connect the latest line is sent
@@ -410,15 +451,11 @@ async fn subtitle_socket(socket: WebSocket, app: Arc<AppState>) {
         tokio::select! {
             message = updates.recv() => match message {
                 Ok(line) => {
-                    let payload = serde_json::json!({
-                        "type": "subtitle",
-                        "text": line.text,
-                        "delta": line.delta,
-                        "reset": line.reset,
-                        "at_ms": line.at_ms,
-                    });
+                    let Ok(payload) = serde_json::to_string(&line) else {
+                        continue;
+                    };
                     if sink
-                        .send(Message::Text(payload.to_string().into()))
+                        .send(Message::Text(payload.into()))
                         .await
                         .is_err()
                     {

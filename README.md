@@ -246,18 +246,31 @@ http://127.0.0.1:8272/live                    # as it comes
 http://127.0.0.1:8272/live?size=64&transparent=1
 ```
 
-| query | effect |
-|---|---|
-| `size` | font size in px, default 48 |
-| `color` | text colour, default `#ffffff` |
-| `bg` | caption background, default translucent black |
-| `transparent=1` | no background bar, for overlaying on video |
-| `bottom` | distance from the bottom edge, default `6%` |
+Its appearance is set in the console's **直播字幕** tab and saved to
+`~/.local/share/r2t2/config.toml`:
 
-That page is 1.6 KB and opens a WebSocket to `/ws/subtitles`; it reconnects on
-its own if the server restarts. Because it is only ever a caption layer, OBS
-composites it with the picture — nothing is re-encoded and no latency is added
-beyond recognition itself.
+| setting | default | meaning |
+|---|---|---|
+| 显示行数 | 2 | lines kept on screen, including the one being spoken |
+| 每行字数 | 20 | characters before a line is pushed up |
+| 字号 | 48 | pixels, relative to a 1080p frame |
+| 文字颜色 | `#ffffff` | |
+| 距底部 | `6%` | distance from the bottom of the frame |
+| 不显示背景条 | off | for compositing directly onto video |
+
+Line length is counted in full-width units: **two Latin letters equal one CJK
+character**, so a line of either kind occupies the same space. Lines break
+after punctuation when there is any near the limit, otherwise at a space rather
+than inside a Latin word.
+
+The overlay reads this at load and receives changes over the same WebSocket it
+uses for captions, so saving in the console updates an overlay that is already
+open in OBS — no refresh, and nothing to retype. Its bundle is 2.5 KB. Because
+it is only ever a caption layer, OBS composites it with the picture: nothing is
+re-encoded and no latency is added beyond recognition itself.
+
+The file can also be edited by hand; it is re-read on each start, and values
+outside the sensible range are clamped rather than rejected.
 
 To check the pipeline without OBS:
 
@@ -364,6 +377,7 @@ src/
     transcribe.rs
     mux.rs
     serve.rs
+  config.rs      the configuration file
   live.rs        live subtitles: incoming audio to published text
   rtmp.rs        RTMP ingest, for streams pushed by OBS
   main.rs        entry point

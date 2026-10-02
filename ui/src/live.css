@@ -48,7 +48,7 @@
   /* A dark outline keeps text readable over bright footage even when the
    * background bar is turned off. */
   text-shadow: var(--caption-shadow);
-  animation: caption-in 120ms ease-out;
+  
 }
 
 @keyframes caption-in {

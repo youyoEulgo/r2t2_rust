@@ -153,6 +153,35 @@ export interface LiveStatus {
   latest: string
 }
 
+/** How the caption overlay is drawn. Mirrors the server's configuration. */
+export interface CaptionConfig {
+  lines: number
+  chars: number
+  size: number
+  color: string
+  background: string
+  bottom: string
+  transparent: boolean
+}
+
+export async function captionConfig(): Promise<CaptionConfig> {
+  const res = await fetch('/api/live/caption')
+  if (!res.ok) throw new Error(await readError(res))
+  return (await res.json()) as CaptionConfig
+}
+
+export async function saveCaptionConfig(
+  cfg: CaptionConfig,
+): Promise<CaptionConfig> {
+  const res = await fetch('/api/live/caption', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(cfg),
+  })
+  if (!res.ok) throw new Error(await readError(res))
+  return (await res.json()) as CaptionConfig
+}
+
 export async function liveStatus(): Promise<LiveStatus> {
   const res = await fetch('/api/live')
   if (!res.ok) throw new Error(await readError(res))
