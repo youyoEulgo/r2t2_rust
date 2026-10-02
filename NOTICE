@@ -48,9 +48,9 @@ Copyright 2023-2026 The ggml authors
 Licensed under the MIT License
 --------------------------------------------------------------------------------
 
-The libraries in vendor/lib, and the headers in vendor/include, are build
-products of llama.cpp, linked at runtime rather than modified. They are
-redistributed under the terms of the MIT License:
+The build clones llama.cpp at a pinned revision and compiles its libraries,
+which are linked at runtime rather than modified. No llama.cpp source or binary
+is redistributed here. It is used under the terms of the MIT License:
 
   Permission is hereby granted, free of charge, to any person obtaining a copy
   of this software and associated documentation files (the "Software"), to deal

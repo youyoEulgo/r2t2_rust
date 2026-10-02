@@ -28,7 +28,7 @@ use anyhow::{anyhow, bail, Context as _, Result};
 ///
 /// The generated code is not ours to fix at the source, and this toolchain
 /// reports `unnecessary_transmute` inside it. Allowing the lints here keeps
-/// `cargo build` clean without touching vendored output.
+/// `cargo build` clean without editing generated output.
 #[allow(
     non_upper_case_globals,
     non_camel_case_types,

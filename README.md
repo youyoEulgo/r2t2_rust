@@ -54,9 +54,47 @@ Requirements:
 | `libclang` | build only, for bindgen |
 | `ffmpeg` | for non-WAV input, and for `r2t2 mux` |
 
-The llama.cpp libraries are vendored in [`vendor/`](vendor/README.md) — no
-llama.cpp checkout is needed. Read that file before rebuilding them; it records
-why they were built locally and what that means for portability.
+**llama.cpp is compiled from source, for your machine.** The first build
+clones it at a pinned revision into `third_party/` and compiles it, which takes
+a few minutes and happens once; later builds reuse the result. This is
+deliberate rather than convenient: a prebuilt llama.cpp is compiled for one
+instruction set and one set of GPU architectures, so shipping one means either
+wasting the hardware or crashing on it. See [Why compile](#why-compile) below.
+
+Build knobs, all optional:
+
+| variable | effect |
+|---|---|
+| `R2T2_LIB_DIR` | link prebuilt libraries instead of compiling |
+| `R2T2_LLAMA_DIR` | use an existing llama.cpp checkout |
+| `R2T2_CUDA=0` | force a CPU-only build |
+| `R2T2_CUDA_ARCHS` | override the CUDA architecture list |
+| `R2T2_FORCE_REBUILD=1` | recompile llama.cpp even if cached |
+
+### Why compile
+
+The project began with prebuilt llama.cpp artifacts, and they failed in exactly
+the way prebuilt artifacts do. They had been compiled with `-march=native` on a
+machine with AVX-512, so they contained AVX-512 instructions and died with
+`Illegal instruction` on any CPU without it — which is every 12th- and
+13th-generation Intel desktop part, including the one this was being developed
+on. The CUDA side had the mirror-image problem: built for `sm_89` alone, so it
+could only use one generation of GPU.
+
+Compiling on the target machine makes both problems disappear. `-march=native`
+adapts to whatever CPU is present, and the CUDA architecture list is chosen for
+the GPUs that will actually run it. The cost is build time, paid once.
+
+If you need a more portable binary — to redistribute, say — build with the CPU
+baseline instead:
+
+```sh
+R2T2_CUDA_ARCHS="75-virtual;80-virtual;86-real;89-real" \
+    cargo build --release
+```
+
+and for the CPU side, pass `-DGGML_NATIVE=OFF` with an explicit baseline by
+pointing `R2T2_LLAMA_DIR` at a checkout you configure yourself.
 
 ## Model weights
 
@@ -270,7 +308,7 @@ ui/              frontend (Bun + Vite + Vue 3); dist/ is embedded at build time
 examples/
   ws_client.rs   protocol-level integration client
   live_sim.rs    paced streaming client, for watching live output
-vendor/          llama.cpp headers and prebuilt libraries
+third_party/     llama.cpp checkout, cloned on first build (not tracked)
 ```
 
 Everything the three modes agree on — where the model lives, which language to
@@ -332,5 +370,5 @@ knowing before you deploy anything:
 It also disallows high-risk deployments such as medical diagnosis, autonomous
 driving, military use, and large-scale biometric surveillance.
 
-`vendor/lib` and `vendor/include` are llama.cpp build products, redistributed
-under the MIT licence (full text in NOTICE).
+llama.cpp is fetched and compiled at build time under the MIT licence; its full
+text is reproduced in NOTICE.

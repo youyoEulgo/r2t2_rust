@@ -34,3 +34,8 @@
 /ui/node_modules
 /ui/*.tsbuildinfo
 /ui/node_modules/.tmp
+
+# llama.cpp source, cloned by build.rs at a pinned revision. Not tracked: it is
+# an upstream checkout, and committing it would mean carrying 600 MB of code
+# that is not ours.
+/third_party
