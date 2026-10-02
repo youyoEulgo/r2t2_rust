@@ -42,6 +42,7 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         State,
     },
+    Json,
     response::IntoResponse,
     routing::get,
     Router,
@@ -49,7 +50,7 @@ use axum::{
 use clap::Args;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
+use tokio::sync::{broadcast, Mutex};
 use tracing::{debug, error, info, warn};
 
 use crate::audio::TARGET_SAMPLE_RATE;
@@ -108,6 +109,23 @@ pub struct ServeArgs {
     #[arg(long = "no-web")]
     pub no_web: bool,
 
+    /// RTMP port to receive a stream on, for OBS and the like.
+    ///
+    /// Point OBS at `rtmp://<host>:<port>/live` with any stream key.
+    #[arg(long = "rtmp-port", value_name = "PORT", default_value_t = 1935)]
+    pub rtmp_port: u16,
+
+    /// Do not accept RTMP; use only the WebSocket ingest.
+    #[arg(long = "no-rtmp")]
+    pub no_rtmp: bool,
+
+    /// Decode incoming RTMP audio but produce no subtitles.
+    ///
+    /// Useful when the stream is being forwarded for its picture alone, or
+    /// while testing the video path without paying for recognition.
+    #[arg(long = "no-subtitles")]
+    pub no_subtitles: bool,
+
     /// Where uploaded files and their results are kept.
     ///
     /// Defaults to `~/.local/share/r2t2/work`, so results survive a reboot.
@@ -121,8 +139,13 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     info!(model = %model.display(), mmproj = %mmproj.display(), "loading model");
 
     let cfg = args.common.engine_config(model.clone(), mmproj.clone());
-    let engine = StreamEngine::load(&cfg, MAX_NEW_TOKENS)
-        .context("failed to initialise the llama.cpp engine")?;
+    // Exactly one model in the process. The weights are several gigabytes and
+    // a consumer GPU holds one copy, so every path — WebSocket ingest, RTMP
+    // subtitles, and file uploads — shares this engine and takes turns.
+    let engine = Arc::new(Mutex::new(
+        StreamEngine::load(&cfg, MAX_NEW_TOKENS)
+            .context("failed to initialise the llama.cpp engine")?,
+    ));
     info!("model ready");
 
     let vad_config = VadConfig {
@@ -148,25 +171,52 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         std::fs::create_dir_all(&work_dir)
             .with_context(|| format!("could not create {}", work_dir.display()))?;
 
-        // The engine is built on first upload, not here: a server used only
-        // for live audio should not pay for a second copy of the model.
         info!(dir = %work_dir.display(), "web interface enabled");
         Some(Arc::new(crate::web::WebState::new(
             work_dir,
-            args.common.engine_config(&model, &mmproj),
+            engine.clone(),
         )))
     };
 
+    // RTMP ingest runs alongside the WebSocket one, and each is independently
+    // switchable so the subtitle path and the picture path can be tested on
+    // their own.
+    let ingest = if args.no_rtmp {
+        None
+    } else {
+        Some(crate::rtmp::serve(args.rtmp_port).await?)
+    };
+
+    let live = match &ingest {
+        None => None,
+        Some(handle) => {
+            info!("live subtitle path ready");
+            Some(crate::live::spawn(
+                engine.clone(),
+                handle.clone(),
+                args.common.context.clone(),
+                args.common.forced_language().map(str::to_owned),
+                !args.no_subtitles,
+            ))
+        }
+    };
+
     let state = Arc::new(AppState {
-        engine: Mutex::new(engine),
+        engine: engine.clone(),
         vad_config,
         context: args.common.context.clone(),
         web,
+        ingest,
+        live,
+        rtmp_port: args.rtmp_port,
     });
 
     let mut app = Router::new()
         .route("/health", get(|| async { "ok" }))
-        .route("/asr_stream_api_v1", get(handler_v1));
+        .route("/asr_stream_api_v1", get(handler_v1))
+        // Viewers subscribe here; the live pipeline publishes to it.
+        .route("/ws/subtitles", get(handler_subtitles))
+        .route("/api/live", get(handler_live_status));
     if state.web.is_some() {
         app = app.merge(crate::web::routes());
     }
@@ -272,13 +322,121 @@ impl OutEnvelope {
 // --------------------------------------------------------------------------- //
 
 pub struct AppState {
-    /// One engine, serialised: see the module docs on concurrency.
-    engine: Mutex<StreamEngine>,
+    /// The process's one engine, serialised: see the module docs on
+    /// concurrency. Shared with the live and web paths.
+    engine: Arc<Mutex<StreamEngine>>,
     vad_config: VadConfig,
     context: String,
     /// Present when the web interface is enabled. Its engine handle shares the
     /// same context, so an upload and a live stream cannot decode at once.
     pub web: Option<Arc<crate::web::WebState>>,
+    /// Present when RTMP ingest is enabled.
+    pub ingest: Option<crate::rtmp::IngestHandle>,
+    /// Present when RTMP ingest is enabled and feeds the live subtitle path.
+    pub live: Option<crate::live::LiveSubtitles>,
+    /// Port the RTMP listener bound, for display.
+    pub rtmp_port: u16,
+}
+
+/// Report what the live path is doing, for the console to display.
+async fn handler_live_status(State(app): State<Arc<AppState>>) -> impl IntoResponse {
+    let rtmp_enabled = app.ingest.is_some();
+    let (publishing, stream_key) = match &app.ingest {
+        Some(ingest) => (ingest.is_publishing().await, ingest.stream_key().await),
+        None => (false, String::new()),
+    };
+    let (subtitles_enabled, latest) = match &app.live {
+        Some(live) => (live.enabled(), live.latest().await),
+        None => (false, String::new()),
+    };
+
+    Json(serde_json::json!({
+        "rtmp_enabled": rtmp_enabled,
+        "rtmp_port": app.rtmp_port,
+        "subtitles_enabled": subtitles_enabled,
+        "publishing": publishing,
+        "stream_key": stream_key,
+        "latest": latest,
+    }))
+}
+
+/// Subscribe to the live subtitle stream.
+///
+/// Read-only: a viewer sends nothing. On connect the latest line is sent
+/// first, so a viewer that joins mid-stream is not left blank until the next
+/// update.
+async fn handler_subtitles(
+    ws: WebSocketUpgrade,
+    State(app): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| subtitle_socket(socket, app))
+}
+
+async fn subtitle_socket(socket: WebSocket, app: Arc<AppState>) {
+    let (mut sink, stream) = socket.split();
+
+    let Some(live) = app.live.clone() else {
+        let _ = sink
+            .send(Message::Text(
+                serde_json::json!({"error": "live subtitles are not enabled"})
+                    .to_string()
+                    .into(),
+            ))
+            .await;
+        return;
+    };
+
+    // A status line first, then the most recent text, then updates.
+    let status = serde_json::json!({
+        "type": "status",
+        "enabled": live.enabled(),
+        "active": live.is_active().await,
+        "latest": live.latest().await,
+    });
+    if sink
+        .send(Message::Text(status.to_string().into()))
+        .await
+        .is_err()
+    {
+        return;
+    }
+
+    let mut updates = live.subscribe();
+
+    // Forward updates until the viewer goes away. The reader task exists only
+    // to notice a close, since a viewer never sends anything meaningful.
+    let mut reader = stream;
+    loop {
+        tokio::select! {
+            message = updates.recv() => match message {
+                Ok(line) => {
+                    let payload = serde_json::json!({
+                        "type": "subtitle",
+                        "text": line.text,
+                        "delta": line.delta,
+                        "reset": line.reset,
+                        "at_ms": line.at_ms,
+                    });
+                    if sink
+                        .send(Message::Text(payload.to_string().into()))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    debug!(skipped = n, "a subtitle viewer fell behind");
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            },
+            incoming = reader.next() => match incoming {
+                None | Some(Err(_)) => break,
+                Some(Ok(Message::Close(_))) => break,
+                Some(Ok(_)) => {}
+            },
+        }
+    }
 }
 
 /// Resolves when the process should stop accepting work.

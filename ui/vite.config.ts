@@ -20,5 +20,15 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+    rollupOptions: {
+      input: {
+        // The console.
+        index: fileURLToPath(new URL('./index.html', import.meta.url)),
+        // The caption overlay, kept separate so its bundle stays small: OBS
+        // loads this as a browser source and nothing else needs to come with
+        // it.
+        live: fileURLToPath(new URL('./live.html', import.meta.url)),
+      },
+    },
   },
 })

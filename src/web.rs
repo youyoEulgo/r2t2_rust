@@ -41,7 +41,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use crate::cli::serve::AppState;
-use crate::engine::Engine;
+use crate::stream::StreamEngine;
 use crate::media;
 use crate::subtitle::{self, QualityConfig, SplitConfig};
 use crate::vad::{Sensitivity, VadConfig};
@@ -225,37 +225,27 @@ impl Jobs {
 pub struct WebState {
     pub jobs: Arc<Jobs>,
     pub work_dir: PathBuf,
-    /// Engine settings, used to build the engine on first use.
-    engine_config: crate::engine::EngineConfig,
-    /// The engine, created on first upload.
+    /// The process's engine, shared with the other paths.
     ///
-    /// Deferred because loading the model takes about a second and allocates
-    /// its share of the GPU: a server started only for live audio should not
-    /// pay that until a file is actually uploaded.
-    engine: tokio::sync::OnceCell<Mutex<Engine>>,
+    /// Not loaded here: the model is several gigabytes and the process holds
+    /// exactly one copy, so this borrows the one `serve` created.
+    engine: Arc<Mutex<StreamEngine>>,
     pub next_id: AtomicU64,
 }
 
 impl WebState {
-    pub fn new(work_dir: PathBuf, engine_config: crate::engine::EngineConfig) -> Self {
+    pub fn new(work_dir: PathBuf, engine: Arc<Mutex<StreamEngine>>) -> Self {
         Self {
             jobs: Arc::new(Jobs::default()),
             work_dir,
-            engine_config,
-            engine: tokio::sync::OnceCell::new(),
+            engine,
             next_id: AtomicU64::new(1),
         }
     }
 
-    /// The engine, loading it if this is the first call.
-    async fn engine(&self) -> Result<&Mutex<Engine>> {
-        self.engine
-            .get_or_try_init(|| async {
-                let engine = Engine::load(&self.engine_config)
-                    .context("failed to load the model for the web interface")?;
-                Ok::<_, anyhow::Error>(Mutex::new(engine))
-            })
-            .await
+    /// The shared engine.
+    async fn engine(&self) -> &Mutex<StreamEngine> {
+        &self.engine
     }
 }
 
@@ -263,6 +253,9 @@ impl WebState {
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", get(index))
+        // The caption overlay, loaded as a browser source in OBS. Served at a
+        // short path because it gets typed into OBS by hand.
+        .route("/live", get(caption))
         .route("/_ui/{*path}", get(asset))
         .route("/api/jobs", post(create_job))
         .route("/api/jobs/{id}", get(job_status))
@@ -288,6 +281,18 @@ async fn index() -> Response {
         None => (
             StatusCode::NOT_FOUND,
             "web interface not built: run `bun run build` in ui/",
+        )
+            .into_response(),
+    }
+}
+
+/// The caption overlay page.
+async fn caption() -> Response {
+    match UiAssets::get("live.html") {
+        Some(a) => html(a.data.into_owned()),
+        None => (
+            StatusCode::NOT_FOUND,
+            "caption page not built: run `bun run build` in ui/",
         )
             .into_response(),
     }
@@ -502,7 +507,7 @@ async fn process(
 
     // ---- transcribe -------------------------------------------------------
     set(Stage::Transcribing);
-    let engine = web.engine().await?;
+    let engine = web.engine().await;
     let engine = engine.lock().await;
     let mut cues = Vec::new();
     let mut transcript_parts = Vec::new();
@@ -541,7 +546,7 @@ async fn process(
 
 /// Transcribe one detected segment, applying the quality guards.
 fn transcribe_one(
-    engine: &Engine,
+    engine: &StreamEngine,
     samples: &[f32],
     seg: &crate::vad::Segment,
     options: &JobOptions,

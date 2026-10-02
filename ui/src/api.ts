@@ -137,6 +137,28 @@ export async function submit(
   return (await res.json()) as JobStatus
 }
 
+/** Live-stream state, as reported by the ingest. */
+export interface LiveStatus {
+  /** True when the server was started with RTMP ingest enabled. */
+  rtmp_enabled: boolean
+  /** Whether subtitles are being produced at all. */
+  subtitles_enabled: boolean
+  /** True while a publisher is connected. */
+  publishing: boolean
+  /** The stream key the publisher used. */
+  stream_key: string
+  /** Port the RTMP listener is on. */
+  rtmp_port: number
+  /** Most recent caption text. */
+  latest: string
+}
+
+export async function liveStatus(): Promise<LiveStatus> {
+  const res = await fetch('/api/live')
+  if (!res.ok) throw new Error(await readError(res))
+  return (await res.json()) as LiveStatus
+}
+
 /** Combine a video and a subtitle file into one MKV. */
 export async function mux(
   video: File,

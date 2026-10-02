@@ -1,0 +1,75 @@
+/* Caption overlay styling.
+ *
+ * Sized for a video frame rather than a document: large text, hard contrast,
+ * positioned near the bottom. Every value can be overridden by a query
+ * parameter so one build serves different sources in OBS. */
+
+.caption-page {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  overflow: hidden;
+  height: 100vh;
+}
+
+#caption {
+  --caption-size: 48px;
+  --caption-color: #ffffff;
+  --caption-bg: rgba(0, 0, 0, 0.62);
+  --caption-bottom: 6%;
+  --caption-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: var(--caption-bottom);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25em;
+  padding: 0 3%;
+  font-family: system-ui, -apple-system, "Noto Sans SC", "Noto Sans JP", sans-serif;
+  pointer-events: none;
+}
+
+.caption-line {
+  display: inline-block;
+  max-width: 100%;
+  padding: 0.18em 0.5em;
+  border-radius: 6px;
+  background: var(--caption-bg);
+  color: var(--caption-color);
+  font-size: var(--caption-size);
+  font-weight: 600;
+  line-height: 1.35;
+  text-align: center;
+  /* Text can be long; wrap rather than overflow the frame. */
+  overflow-wrap: anywhere;
+  /* A dark outline keeps text readable over bright footage even when the
+   * background bar is turned off. */
+  text-shadow: var(--caption-shadow);
+  animation: caption-in 120ms ease-out;
+}
+
+@keyframes caption-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Older lines sit back a little so the eye goes to the newest one. */
+.caption-line:not(.caption-current) {
+  opacity: 0.72;
+  font-size: calc(var(--caption-size) * 0.88);
+}
+
+.caption-notice {
+  font-size: calc(var(--caption-size) * 0.6);
+  font-weight: 400;
+  opacity: 0.75;
+}

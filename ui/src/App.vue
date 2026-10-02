@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import {
   LANGUAGES,
+  liveStatus,
   VAD_SENSITIVITIES,
   defaultOptions,
   describe,
@@ -9,14 +10,57 @@ import {
   mux,
   progress,
   submit,
-  watch,
+  watch as watchJob,
   type Artifact,
   type JobOptions,
   type JobStatus,
+  type LiveStatus,
 } from './api'
 
 /** Which panel is open. Transcribing and muxing are independent jobs. */
-const tab = ref<'transcribe' | 'mux'>('transcribe')
+const tab = ref<'transcribe' | 'mux' | 'live'>('transcribe')
+
+// ---- live panel state ----
+const live = ref<LiveStatus | null>(null)
+const liveError = ref<string | null>(null)
+let liveTimer: number | undefined
+
+/** Poll the live status while the panel is open. */
+function refreshLive() {
+  liveStatus()
+    .then((s) => {
+      live.value = s
+      liveError.value = null
+    })
+    .catch((e) => {
+      liveError.value = e instanceof Error ? e.message : String(e)
+    })
+}
+
+watch(tab, (t) => {
+  if (liveTimer !== undefined) {
+    clearInterval(liveTimer)
+    liveTimer = undefined
+  }
+  if (t === 'live') {
+    refreshLive()
+    liveTimer = window.setInterval(refreshLive, 2000)
+  }
+})
+
+onBeforeUnmount(() => {
+  if (liveTimer !== undefined) clearInterval(liveTimer)
+})
+
+/** The RTMP URL to paste into OBS, built from where the page is served. */
+const rtmpUrl = computed(() => {
+  const host = location.hostname || 'localhost'
+  const port = live.value?.rtmp_port ?? 1935
+  return `rtmp://${host}:${port}/live`
+})
+
+/** The caption overlay URL, for an OBS browser source. */
+const captionUrl = computed(() => `${location.origin}/live`)
 
 // ---- mux panel state ----
 const muxVideo = ref<File | null>(null)
@@ -108,7 +152,7 @@ async function run() {
   try {
     const created = await submit(file.value, { ...options })
     job.value = created
-    await watch(
+    await watchJob(
       created.id,
       (j) => {
         job.value = j
@@ -129,6 +173,11 @@ function reset() {
   job.value = null
   error.value = null
   busy.value = false
+}
+
+/** Copy text, with a brief acknowledgement on the button. */
+function copy(text: string) {
+  void navigator.clipboard.writeText(text)
 }
 
 function copyTranscript() {
@@ -164,6 +213,9 @@ onBeforeUnmount(() => controller?.abort())
       </button>
       <button :class="{ active: tab === 'mux' }" @click="tab = 'mux'">
         合并字幕
+      </button>
+      <button :class="{ active: tab === 'live' }" @click="tab = 'live'">
+        直播字幕
       </button>
     </nav>
 
@@ -268,6 +320,61 @@ onBeforeUnmount(() => controller?.abort())
 
       <p v-if="error" class="error">{{ error }}</p>
     </section>
+
+    <!-- ---------- live ---------- -->
+    <template v-if="tab === 'live'">
+      <section class="panel">
+        <p class="lead tight">
+          把 OBS 的推流地址指向这台机器，识别结果会实时叠加成字幕。
+          字幕画面本身是一个网页，可以作为浏览器源加入 OBS 场景。
+        </p>
+
+        <p v-if="liveError" class="error">{{ liveError }}</p>
+
+        <template v-else-if="live">
+          <div class="status">
+            <span :class="['dot', live.publishing ? 'done' : 'idle']"></span>
+            <span>
+              {{ live.publishing ? '正在接收推流' : '等待推流' }}
+            </span>
+            <span v-if="live.stream_key" class="muted">· 串流密钥 “{{ live.stream_key }}”</span>
+          </div>
+
+          <p v-if="!live.rtmp_enabled" class="error">
+            服务端未启用 RTMP 接收，请去掉 <code>--no-rtmp</code> 后重启。
+          </p>
+          <p v-else-if="!live.subtitles_enabled" class="error">
+            服务端启用了 <code>--no-subtitles</code>，只接收音频但不产生字幕。
+          </p>
+
+          <h3>推流地址</h3>
+          <div class="copy-row">
+            <code>{{ rtmpUrl }}</code>
+            <button @click="copy(rtmpUrl)">复制</button>
+          </div>
+          <p class="hint">
+            OBS → 设置 → 推流 → 服务选「自定义」，服务器填上面的地址，串流密钥留空即可。
+          </p>
+
+          <h3>字幕画面</h3>
+          <div class="copy-row">
+            <code>{{ captionUrl }}</code>
+            <button @click="copy(captionUrl)">复制</button>
+            <a :href="captionUrl" target="_blank" rel="noreferrer">
+              <button>打开预览</button>
+            </a>
+          </div>
+          <p class="hint">
+            在 OBS 里添加「浏览器」源并填入该地址，即可把字幕叠加到画面中。
+            可用查询参数调整外观，例如
+            <code>?size=64&amp;transparent=1</code>。
+          </p>
+
+          <h3>当前字幕</h3>
+          <pre class="transcript">{{ live.latest || '（尚未收到语音）' }}</pre>
+        </template>
+      </section>
+    </template>
 
     <!-- ---------- mux ---------- -->
     <template v-if="tab === 'mux'">
@@ -466,6 +573,7 @@ button.link:hover { background: none; text-decoration: underline; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
 .dot.transcribing, .dot.decoding, .dot.muxing { background: var(--accent); animation: pulse 1.2s infinite; }
 .dot.done { background: var(--ok); }
+.dot.idle { background: var(--muted); }
 .dot.failed { background: var(--err); }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 
@@ -495,6 +603,19 @@ h3 { font-size: 0.9rem; color: var(--muted); font-weight: 600; margin: 1.5rem 0 
 .artifacts .name { flex: 1; font-size: 0.9rem; }
 
 .error { color: var(--err); margin: 0.75rem 0 0; font-size: 0.9rem; }
+
+/* A path or URL with its own copy button. */
+.copy-row {
+  display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
+  margin-top: 0.5rem;
+}
+.copy-row code {
+  flex: 1; min-width: 16rem;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+  padding: 0.45rem 0.6rem; font-size: 0.9rem;
+  overflow-x: auto; white-space: nowrap;
+}
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 
 footer { margin-top: 2.5rem; font-size: 0.85rem; }
 

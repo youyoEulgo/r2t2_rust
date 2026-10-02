@@ -227,6 +227,52 @@ with hot reload and proxies `/api` to a running `r2t2 serve`.
 and results are kept (the system temporary directory by default, which is
 cleared on reboot).
 
+### Live subtitles from a stream
+
+Point OBS at this machine and its audio is transcribed as it arrives:
+
+```
+OBS → 设置 → 推流 → 服务「自定义」
+      服务器   rtmp://<host>:1935/live
+      串流密钥 （留空）
+```
+
+The console's **直播字幕** tab shows the state and the exact URL to paste. The
+recognised text appears at `/live`, a caption overlay designed to be added to
+the OBS scene as a browser source:
+
+```
+http://127.0.0.1:8272/live                    # as it comes
+http://127.0.0.1:8272/live?size=64&transparent=1
+```
+
+| query | effect |
+|---|---|
+| `size` | font size in px, default 48 |
+| `color` | text colour, default `#ffffff` |
+| `bg` | caption background, default translucent black |
+| `transparent=1` | no background bar, for overlaying on video |
+| `bottom` | distance from the bottom edge, default `6%` |
+
+That page is 1.6 KB and opens a WebSocket to `/ws/subtitles`; it reconnects on
+its own if the server restarts. Because it is only ever a caption layer, OBS
+composites it with the picture — nothing is re-encoded and no latency is added
+beyond recognition itself.
+
+To check the pipeline without OBS:
+
+```sh
+# in one terminal
+cargo run --release --example sub_client
+
+# in another: push a file as though it were a live stream
+ffmpeg -re -i resources/test.wav -c:a aac -f flv rtmp://127.0.0.1:1935/live
+```
+
+`--no-rtmp` disables the ingest, `--rtmp-port` moves it, and `--no-subtitles`
+accepts and decodes a stream without recognising it — so the picture path can
+be exercised without paying for recognition.
+
 ### Live audio over WebSocket
 
 ```sh
@@ -283,6 +329,21 @@ handles two of them:
 A third failure is out of reach for heuristics: fluent but wrong text, such as
 `会话容器` heard as `绘画容器`. That needs hotwords (`-c`) or a person.
 
+## Known limits
+
+**Speech only, not music.** On songs the model misrecognises lyrics, the voice
+activity detector cannot find the gaps between phrases because a backing track
+never goes quiet, and long instrumental passages attract repeated hallucinated
+text. Hotwords change the output but do not make it correct, and once the
+timings are wrong no amount of post-processing recovers them. Subtitles for
+sung material need forced alignment against a known lyric sheet, which is a
+different kind of tool.
+
+**One stream at a time.** A single GPU holds one model, and the whole process
+shares it. File transcription, WebSocket ingest and RTMP ingest take turns; a
+second RTMP publisher is rejected rather than mixed into the first's
+transcript.
+
 ## Layout
 
 ```
@@ -303,11 +364,16 @@ src/
     transcribe.rs
     mux.rs
     serve.rs
+  live.rs        live subtitles: incoming audio to published text
+  rtmp.rs        RTMP ingest, for streams pushed by OBS
   main.rs        entry point
 ui/              frontend (Bun + Vite + Vue 3); dist/ is embedded at build time
+  index.html     the console
+  live.html      the caption overlay, loaded by OBS as a browser source
 examples/
   ws_client.rs   protocol-level integration client
   live_sim.rs    paced streaming client, for watching live output
+  sub_client.rs  subscribes to /ws/subtitles and prints captions
 third_party/     llama.cpp checkout, cloned on first build (not tracked)
 ```
 

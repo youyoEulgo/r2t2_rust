@@ -99,6 +99,22 @@ impl StreamEngine {
         })
     }
 
+    /// Transcribe a whole clip in one pass.
+    ///
+    /// Streaming and one-shot are two ways of driving the same model, and the
+    /// process must hold exactly one copy of it: the weights alone are several
+    /// gigabytes, and a second copy does not fit on a consumer GPU. So the
+    /// one-shot paths reach the model through here rather than loading their
+    /// own.
+    pub fn transcribe(
+        &self,
+        audio: &[f32],
+        prompt: &str,
+        max_tokens: i32,
+    ) -> Result<crate::engine::TranscribeResult> {
+        self.engine.transcribe(audio, prompt, max_tokens)
+    }
+
     /// Create state for one stream. Mirrors `init_streaming_state()`.
     pub fn init_state(
         &self,

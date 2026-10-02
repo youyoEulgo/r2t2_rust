@@ -16,6 +16,8 @@
 //! * [`media`] -- decoding video and audio input via ffmpeg.
 //! * [`model`] -- locating the language model and projector GGUF pair.
 //! * [`paths`] -- the data directory, and fetching the model when missing.
+//! * [`rtmp`] -- RTMP ingest, for streams pushed by OBS.
+//! * [`live`] -- live subtitles, from an incoming stream to viewers.
 //! * [`web`] -- the web interface: static assets and the upload API.
 //! * [`audio`] -- decoding WAV input to the mono 16 kHz the model expects.
 //! * [`prompt`] -- chat-template prompt construction.
@@ -26,11 +28,13 @@
 pub mod audio;
 pub mod cli;
 pub mod engine;
+pub mod live;
 pub mod media;
 pub mod model;
 pub mod paths;
 pub mod prompt;
 pub mod quality;
+pub mod rtmp;
 pub mod stream;
 pub mod subtitle;
 pub mod vad;
