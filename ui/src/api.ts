@@ -182,6 +182,62 @@ export async function saveCaptionConfig(
   return (await res.json()) as CaptionConfig
 }
 
+/** Whether the recognition model is available. */
+export interface ModelStatus {
+  ready: boolean
+  model_present: boolean
+  models_dir: string
+  error: string | null
+}
+
+export async function modelStatus(): Promise<ModelStatus> {
+  const res = await fetch('/api/model')
+  if (!res.ok) throw new Error(await readError(res))
+  return (await res.json()) as ModelStatus
+}
+
+/** One progress line from the model download. */
+export interface DownloadProgress {
+  stage: 'downloading' | 'done' | 'failed'
+  written?: number
+  total?: number | null
+  error?: string
+}
+
+/**
+ * Download the weights, reporting progress as it goes.
+ *
+ * The response is newline-delimited JSON rather than one object, because the
+ * transfer is 2.1 GB and takes minutes: a single response would leave the
+ * interface with nothing to show until it finished.
+ */
+export async function downloadModel(
+  onProgress: (p: DownloadProgress) => void,
+): Promise<void> {
+  const res = await fetch('/api/model/download', { method: 'POST' })
+  if (!res.ok) throw new Error(await readError(res))
+  if (!res.body) throw new Error('the server sent no progress stream')
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffered = ''
+
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffered += decoder.decode(value, { stream: true })
+
+    // A chunk may end mid-line, so only complete lines are parsed.
+    let newline: number
+    while ((newline = buffered.indexOf('\n')) !== -1) {
+      const line = buffered.slice(0, newline).trim()
+      buffered = buffered.slice(newline + 1)
+      if (line) onProgress(JSON.parse(line) as DownloadProgress)
+    }
+  }
+  if (buffered.trim()) onProgress(JSON.parse(buffered.trim()) as DownloadProgress)
+}
+
 export async function liveStatus(): Promise<LiveStatus> {
   const res = await fetch('/api/live')
   if (!res.ok) throw new Error(await readError(res))

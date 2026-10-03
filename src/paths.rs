@@ -198,6 +198,24 @@ fn endpoint() -> String {
 
 /// Fetch the default model pair into `dir`.
 pub fn download_models(dir: &Path) -> Result<()> {
+    download_models_reporting(dir, |_, _| {})
+}
+
+/// Total size of the two files, for a progress bar.
+///
+/// Advertised rather than discovered: the server starts the download in
+/// response to a button press, and the interface should be able to draw a bar
+/// immediately rather than after the first byte arrives.
+pub const MODEL_BYTES: u64 = 1_834_000_000 + 348_000_000;
+
+/// Download the model pair, reporting progress.
+///
+/// `progress` receives bytes written so far and the total when the server
+/// states one. Called from a blocking context, so it must not block.
+pub fn download_models_reporting(
+    dir: &Path,
+    mut progress: impl FnMut(u64, Option<u64>),
+) -> Result<()> {
     std::fs::create_dir_all(dir)
         .with_context(|| format!("could not create {}", dir.display()))?;
 
@@ -210,7 +228,7 @@ pub fn download_models(dir: &Path) -> Result<()> {
             continue;
         }
         eprintln!("downloading {file} from {base} ...");
-        fetch(&url, &dest).with_context(|| {
+        fetch_reporting(&url, &dest, &mut progress).with_context(|| {
             format!(
                 "could not download {file}\n\
                  If huggingface.co is unreachable, set HF_ENDPOINT to a mirror, e.g.\n\
@@ -225,7 +243,11 @@ pub fn download_models(dir: &Path) -> Result<()> {
 ///
 /// Downloads to a temporary name and renames on success, so an interrupted
 /// transfer never leaves a truncated file that looks complete.
-fn fetch(url: &str, dest: &Path) -> Result<()> {
+fn fetch_reporting(
+    url: &str,
+    dest: &Path,
+    progress: &mut impl FnMut(u64, Option<u64>),
+) -> Result<()> {
     let client = reqwest::blocking::Client::builder()
         .user_agent(concat!("r2t2/", env!("CARGO_PKG_VERSION")))
         .build()
@@ -257,6 +279,7 @@ fn fetch(url: &str, dest: &Path) -> Result<()> {
         // Report at most a few times a second; a line per 256 KB would be
         // thousands of lines for this file.
         if last_report.elapsed().as_millis() >= 250 {
+            progress(written, total);
             match total {
                 Some(t) if t > 0 => eprint!(
                     "\r  {:>5.1}%  {:.0} / {:.0} MB",

@@ -190,6 +190,12 @@ the default browser. This exists so that double-clicking the executable on
 Windows lands somewhere useful rather than in a console window that flashes a
 usage screen and vanishes.
 
+**The weights are not needed to start.** The model is loaded the first time
+something actually needs transcribing, so a fresh install opens the interface
+and offers to fetch it rather than failing before the window appears. The
+interface shows a download button with a progress bar, and once the files are
+in place recognition begins working without a restart.
+
 Server flags work here too, since they are accepted before the subcommand as
 well as after it:
 

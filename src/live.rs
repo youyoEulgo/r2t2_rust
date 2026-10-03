@@ -22,7 +22,7 @@ use tokio::sync::{broadcast, Mutex};
 use tracing::{debug, info, warn};
 
 use crate::rtmp::{IngestEvent, IngestHandle};
-use crate::stream::StreamEngine;
+use crate::lazy_engine::LazyEngine;
 
 /// What is sent to a viewer over `/ws/subtitles`.
 ///
@@ -110,7 +110,7 @@ const CHUNK_SECONDS: f32 = 0.16;
 /// and audio is still decoded, so the picture path can be exercised without
 /// paying for recognition.
 pub fn spawn(
-    engine: Arc<Mutex<StreamEngine>>,
+    engine: Arc<LazyEngine>,
     ingest: IngestHandle,
     context: String,
     language: Option<String>,
@@ -131,6 +131,14 @@ pub fn spawn(
             info!("live subtitles disabled; audio will be decoded but not transcribed");
             return;
         }
+
+        // The model may not be present yet, and an OBS connection should not
+        // wait on a download or fail because of one: publishing before the
+        // weights exist simply produces no captions until they do.
+        let Ok(engine) = engine.get().await else {
+            warn!("live subtitles are waiting for a usable model");
+            return;
+        };
 
         let mut state = engine.lock().await.init_state(
             &context,

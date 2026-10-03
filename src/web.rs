@@ -41,6 +41,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use crate::cli::serve::AppState;
+use crate::lazy_engine::LazyEngine;
 use crate::stream::StreamEngine;
 use crate::media;
 use crate::subtitle::{self, QualityConfig, SplitConfig};
@@ -225,16 +226,17 @@ impl Jobs {
 pub struct WebState {
     pub jobs: Arc<Jobs>,
     pub work_dir: PathBuf,
-    /// The process's engine, shared with the other paths.
+    /// The process's engine, shared with the other paths and created on first
+    /// use.
     ///
-    /// Not loaded here: the model is several gigabytes and the process holds
-    /// exactly one copy, so this borrows the one `serve` created.
-    engine: Arc<Mutex<StreamEngine>>,
+    /// Not loaded here: the model is several gigabytes, the process holds
+    /// exactly one copy, and it may not have been downloaded yet.
+    engine: Arc<LazyEngine>,
     pub next_id: AtomicU64,
 }
 
 impl WebState {
-    pub fn new(work_dir: PathBuf, engine: Arc<Mutex<StreamEngine>>) -> Self {
+    pub fn new(work_dir: PathBuf, engine: Arc<LazyEngine>) -> Self {
         Self {
             jobs: Arc::new(Jobs::default()),
             work_dir,
@@ -243,9 +245,9 @@ impl WebState {
         }
     }
 
-    /// The shared engine.
-    async fn engine(&self) -> &Mutex<StreamEngine> {
-        &self.engine
+    /// The shared engine, loading it if this is the first successful call.
+    async fn engine(&self) -> anyhow::Result<std::sync::Arc<Mutex<StreamEngine>>> {
+        self.engine.get().await
     }
 }
 
@@ -507,7 +509,10 @@ async fn process(
 
     // ---- transcribe -------------------------------------------------------
     set(Stage::Transcribing);
-    let engine = web.engine().await;
+    let engine = web
+        .engine()
+        .await
+        .map_err(|e| anyhow::anyhow!("the recognition model is not available: {e:#}"))?;
     let engine = engine.lock().await;
     let mut cues = Vec::new();
     let mut transcript_parts = Vec::new();

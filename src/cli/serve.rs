@@ -44,18 +44,18 @@ use axum::{
     },
     http::StatusCode,
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use clap::Args;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
 
 use crate::audio::TARGET_SAMPLE_RATE;
 use crate::cli::CommonArgs;
-use crate::stream::{StreamEngine, StreamState};
+use crate::stream::StreamState;
 use crate::vad::{Segmenter, Sensitivity, VadConfig, FRAME_SAMPLES};
 
 /// Ends a stream. Must match the reference server byte for byte.
@@ -66,9 +66,6 @@ const CHUNK_SECONDS: f32 = 0.16;
 const CHUNK_SAMPLES: usize = (TARGET_SAMPLE_RATE as f32 * CHUNK_SECONDS) as usize;
 /// Extra audio the first chunk carries, so the opening decode has context.
 const LOOKAHEAD_SAMPLES: usize = CHUNK_SAMPLES;
-
-/// Maximum tokens per decode step.
-const MAX_NEW_TOKENS: i32 = 10;
 
 /// Trailing tokens left unfixed when prompting.
 const UNFIXED_TOKEN_NUM: usize = 1;
@@ -167,24 +164,33 @@ impl Default for ServeArgs {
 
 /// Run the server. Blocks until interrupted.
 pub async fn run(args: ServeArgs) -> Result<()> {
-    let (model, mmproj) = args.common.resolve_model()?;
-    info!(model = %model.display(), mmproj = %mmproj.display(), "loading model");
-
-    // Create the configuration file if it is not there, so there is something
-    // to edit and the console has something to change.
+    // The configuration file is created if it is not there, so there is
+    // something to edit and the console has something to change.
     if let Err(err) = crate::config::Config::ensure_file(&crate::paths::config_file()) {
         warn!(error = %err, "could not create the configuration file; defaults will be used");
     }
 
-    let cfg = args.common.engine_config(model.clone(), mmproj.clone());
-    // Exactly one model in the process. The weights are several gigabytes and
-    // a consumer GPU holds one copy, so every path — WebSocket ingest, RTMP
-    // subtitles, and file uploads — shares this engine and takes turns.
-    let engine = Arc::new(Mutex::new(
-        StreamEngine::load(&cfg, MAX_NEW_TOKENS)
-            .context("failed to initialise the llama.cpp engine")?,
+    // The model is *not* loaded here. The server does not need it to start, and
+    // starting anyway means a missing or half-downloaded model is reported in
+    // the interface — with a button to fetch it — rather than as an error on a
+    // console that someone who double-clicked the program may never see.
+    //
+    // The place to look is fixed now: an explicit `--gguf-dir` is honoured, and
+    // otherwise the default directory, where the download button writes.
+    let models_dir = match args.common.gguf_dir.clone() {
+        Some(dir) => dir,
+        None => crate::paths::models_dir(),
+    };
+    let engine = Arc::new(crate::lazy_engine::LazyEngine::new(
+        args.common.engine_config("", ""),
+        models_dir,
     ));
-    info!("model ready");
+
+    // llama.cpp narrates everything it does. Without --verbose that output
+    // buries this program's own messages, so it is switched off up front.
+    if !args.common.verbose {
+        crate::engine::silence_llama_logging();
+    }
 
     let vad_config = VadConfig {
         sensitivity: Sensitivity::parse(&args.vad_sensitivity)?,
@@ -255,6 +261,9 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         // Viewers subscribe here; the live pipeline publishes to it.
         .route("/ws/subtitles", get(handler_subtitles))
         .route("/api/live", get(handler_live_status))
+        // Whether the model is usable, and a way to fetch it.
+        .route("/api/model", get(handler_model_status))
+        .route("/api/model/download", post(handler_model_download))
         // The caption appearance, shared by the console and the overlay.
         .route(
             "/api/live/caption",
@@ -419,7 +428,7 @@ impl OutEnvelope {
 pub struct AppState {
     /// The process's one engine, serialised: see the module docs on
     /// concurrency. Shared with the live and web paths.
-    engine: Arc<Mutex<StreamEngine>>,
+    engine: Arc<crate::lazy_engine::LazyEngine>,
     vad_config: VadConfig,
     context: String,
     /// Present when the web interface is enabled. Its engine handle shares the
@@ -431,6 +440,58 @@ pub struct AppState {
     pub live: Option<crate::live::LiveSubtitles>,
     /// Port the RTMP listener bound, for display.
     pub rtmp_port: u16,
+}
+
+/// Report whether the recognition model is available.
+async fn handler_model_status(State(app): State<Arc<AppState>>) -> impl IntoResponse {
+    Json(app.engine.status().await)
+}
+
+/// Fetch the model, reporting progress as it goes.
+///
+/// Streams newline-delimited JSON so the interface can show a progress bar
+/// rather than a spinner of unknown duration: the download is 2.1 GB and takes
+/// minutes.
+async fn handler_model_download(State(app): State<Arc<AppState>>) -> Response {
+    if app.engine.model_present() {
+        // Already there: nothing to do, and saying so beats re-downloading.
+        return Json(serde_json::json!({"stage": "done"})).into_response();
+    }
+
+    let dir = app.engine.models_dir();
+
+    // Newline-delimited JSON over a channel-backed body, so the interface can
+    // show a progress bar rather than an indeterminate spinner: this download
+    // is 2.1 GB and takes minutes.
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<axum::body::Bytes, std::io::Error>>(16);
+
+    // The download is blocking HTTP; running it on the async runtime would
+    // stall every other task, including the interface showing the progress.
+    let progress = tx.clone();
+    tokio::task::spawn_blocking(move || {
+        let outcome = crate::paths::download_models_reporting(&dir, |written, total| {
+            let line = serde_json::json!({
+                "stage": "downloading",
+                "written": written,
+                "total": total,
+            });
+            // A full channel means the client stopped reading. Dropping the
+            // update is better than stalling the download behind it.
+            let _ = progress.blocking_send(Ok(axum::body::Bytes::from(format!("{line}\n"))));
+        });
+
+        let line = match outcome {
+            Ok(()) => serde_json::json!({"stage": "done"}),
+            Err(err) => serde_json::json!({"stage": "failed", "error": format!("{err:#}")}),
+        };
+        let _ = progress.blocking_send(Ok(axum::body::Bytes::from(format!("{line}\n"))));
+    });
+
+    (
+        [(axum::http::header::CONTENT_TYPE, "application/x-ndjson")],
+        axum::body::Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+    )
+        .into_response()
 }
 
 /// Report what the live path is doing, for the console to display.
@@ -610,10 +671,25 @@ async fn run_session(socket: WebSocket, state: Arc<AppState>) -> Result<()> {
     let use_vad = header.use_vad.unwrap_or(true);
     info!(rid, language = language.unwrap_or("<auto>"), use_vad, "session started");
 
+    // The engine is resolved once per session. It may not exist yet — the
+    // weights are downloaded from the interface — in which case the session is
+    // refused with something the client can act on, rather than hanging.
+    let engine = match state.engine.get().await {
+        Ok(engine) => engine,
+        Err(err) => {
+            let env = OutEnvelope::error(
+                Some(rid),
+                &format!("the recognition model is not available: {err:#}"),
+            );
+            let _ = sink.send(Message::Text(serde_json::to_string(&env)?.into())).await;
+            bail!("engine unavailable");
+        }
+    };
+
     // ---- per-connection state -------------------------------------------
     let mut stream_state: StreamState = {
-        let engine = state.engine.lock().await;
-        engine.init_state(&state.context, language, 0, UNFIXED_TOKEN_NUM, CHUNK_SECONDS)
+        let guard = engine.lock().await;
+        guard.init_state(&state.context, language, 0, UNFIXED_TOKEN_NUM, CHUNK_SECONDS)
     };
     let mut segmenter = Segmenter::new(state.vad_config.clone())?;
 
@@ -646,7 +722,7 @@ async fn run_session(socket: WebSocket, state: Arc<AppState>) -> Result<()> {
                 info!(rid, "EOS received");
                 let t0 = now_ms();
                 let (final_text, cost) = {
-                    let guard = state.engine.lock().await;
+                    let guard = engine.lock().await;
                     (guard.finish_no_reset(&mut stream_state)?, now_ms() - t0)
                 };
                 let new_text = take_increment(&mut emitted_len, &final_text);
@@ -724,7 +800,7 @@ async fn run_session(socket: WebSocket, state: Arc<AppState>) -> Result<()> {
 
             let t0 = now_ms();
             let outcome = {
-                let guard = state.engine.lock().await;
+                let guard = engine.lock().await;
                 guard.push_no_reset(&chunk, &mut stream_state)
             };
             decode_cost += now_ms() - t0;
@@ -760,21 +836,21 @@ async fn run_session(socket: WebSocket, state: Arc<AppState>) -> Result<()> {
             // not inherit this one's audio or accumulated text.
             let t0 = now_ms();
             let finish_text = {
-                let guard = state.engine.lock().await;
+                let guard = engine.lock().await;
                 guard.finish_no_reset(&mut stream_state).unwrap_or_default()
             };
             decode_cost += now_ms() - t0;
             new_text.push_str(&take_increment(&mut emitted_len, &finish_text));
 
-            let engine = state.engine.lock().await;
-            stream_state = engine.init_state(
+            let guard = engine.lock().await;
+            stream_state = guard.init_state(
                 &state.context,
                 language,
                 0,
                 UNFIXED_TOKEN_NUM,
                 CHUNK_SECONDS,
             );
-            drop(engine);
+            drop(guard);
 
             segmenter = Segmenter::new(state.vad_config.clone())?;
             vad_pending.clear();

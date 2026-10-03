@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
   LANGUAGES,
   liveStatus,
+  modelStatus,
+  downloadModel,
   captionConfig,
   saveCaptionConfig,
   VAD_SENSITIVITIES,
@@ -18,10 +20,62 @@ import {
   type JobStatus,
   type LiveStatus,
   type CaptionConfig,
+  type ModelStatus,
+  type DownloadProgress,
 } from './api'
 
 /** Which panel is open. Transcribing and muxing are independent jobs. */
 const tab = ref<'transcribe' | 'mux' | 'live'>('transcribe')
+
+// ---- model availability ----
+//
+// The server starts without the weights, so every panel has to be able to say
+// that recognition is unavailable and offer to fix it.
+const model = ref<ModelStatus | null>(null)
+const install = reactive({
+  running: false,
+  written: 0,
+  total: 0,
+  error: null as string | null,
+})
+
+const installPercent = computed(() => {
+  if (!install.total) return 0
+  return Math.min(100, Math.round((install.written / install.total) * 100))
+})
+
+async function refreshModel() {
+  try {
+    model.value = await modelStatus()
+  } catch {
+    // The status endpoint is best-effort; a failure here should not blank the
+    // interface, and the next poll will try again.
+  }
+}
+
+async function runInstall() {
+  install.running = true
+  install.written = 0
+  install.total = 0
+  install.error = null
+  try {
+    await downloadModel((p: DownloadProgress) => {
+      if (p.stage === 'downloading') {
+        install.written = p.written ?? 0
+        install.total = p.total ?? 0
+      } else if (p.stage === 'failed') {
+        install.error = p.error ?? '下载失败'
+      }
+    })
+  } catch (e) {
+    install.error = e instanceof Error ? e.message : String(e)
+  } finally {
+    install.running = false
+    await refreshModel()
+  }
+}
+
+onMounted(refreshModel)
 
 // ---- live panel state ----
 const live = ref<LiveStatus | null>(null)
@@ -237,6 +291,49 @@ onBeforeUnmount(() => controller?.abort())
         感谢两个团队的开源工作。所有计算在本机完成。
       </p>
     </header>
+
+    <!-- The model is loaded on first use, so this is the one thing that has to
+         be visible before anything else is attempted. -->
+    <section v-if="model && !model.model_present" class="panel notice">
+      <h3>尚未安装识别模型</h3>
+      <p class="hint">
+        服务已启动，但还没有下载权重文件。识别功能要等模型就绪后才能使用。
+      </p>
+      <p class="hint">
+        将保存到 <code>{{ model.models_dir }}</code>，约 2.1 GB。
+      </p>
+
+      <template v-if="install.running">
+        <div class="bar"><div class="bar-fill" :style="{ width: installPercent + '%' }"></div></div>
+        <p class="hint">
+          正在下载 {{ installPercent }}%
+          <span v-if="install.total">
+            （{{ formatBytes(install.written) }} / {{ formatBytes(install.total) }}）
+          </span>
+        </p>
+      </template>
+      <template v-else>
+        <div class="actions">
+          <button class="primary" @click="runInstall">下载模型</button>
+        </div>
+      </template>
+
+      <p v-if="install.error" class="error">{{ install.error }}</p>
+      <p class="hint">
+        也可以自行下载后放入上述目录，文件名必须是
+        <code>Confucius4-R2T2-Q8_0.gguf</code> 与
+        <code>mmproj-Confucius4-R2T2-Q8_0.gguf</code>。
+      </p>
+    </section>
+
+    <section v-else-if="model && !model.ready" class="panel notice">
+      <h3>模型未能加载</h3>
+      <p class="error">{{ model.error }}</p>
+      <p class="hint">
+        文件位于 <code>{{ model.models_dir }}</code>。修正后重新开始识别即可，
+        服务无需重启。
+      </p>
+    </section>
 
     <nav class="tabs">
       <button :class="{ active: tab === 'transcribe' }" @click="tab = 'transcribe'">
@@ -679,6 +776,16 @@ h3 { font-size: 0.9rem; color: var(--muted); font-weight: 600; margin: 1.5rem 0 
 
 .hint.tight { margin: 0.2rem 0 0; font-size: 0.78rem; }
 .saved { color: var(--ok); font-size: 0.85rem; }
+
+/* A panel that reports a condition rather than offering a form. */
+.notice { border-color: var(--accent); }
+.notice h3 { margin-top: 0; }
+
+.bar {
+  height: 8px; border-radius: 4px; overflow: hidden;
+  background: var(--bg); border: 1px solid var(--line); margin: 0.75rem 0 0.5rem;
+}
+.bar-fill { height: 100%; background: var(--accent); transition: width 200ms ease-out; }
 
 /* A path or URL with its own copy button. */
 .copy-row {

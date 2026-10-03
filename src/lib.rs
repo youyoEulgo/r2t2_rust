@@ -29,6 +29,7 @@ pub mod audio;
 pub mod cli;
 pub mod config;
 pub mod engine;
+pub mod lazy_engine;
 pub mod live;
 pub mod media;
 pub mod model;

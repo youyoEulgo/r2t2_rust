@@ -27,6 +27,7 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "fs", "process"] }
 axum = { version = "0.8", features = ["ws", "multipart"] }
 futures-util = "0.3"
+tokio-stream = { version = "0.1", features = ["sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
