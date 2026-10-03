@@ -5,6 +5,7 @@ import {
   liveStatus,
   modelStatus,
   downloadModel,
+  cancelModelDownload,
   captionConfig,
   saveCaptionConfig,
   VAD_SENSITIVITIES,
@@ -37,7 +38,17 @@ const install = reactive({
   written: 0,
   total: 0,
   error: null as string | null,
+  cancelled: false,
 })
+
+/** Ask the server to stop the transfer in progress. */
+async function stopInstall() {
+  try {
+    await cancelModelDownload()
+  } catch (e) {
+    install.error = e instanceof Error ? e.message : String(e)
+  }
+}
 
 const installPercent = computed(() => {
   if (!install.total) return 0
@@ -58,6 +69,7 @@ async function runInstall() {
   install.written = 0
   install.total = 0
   install.error = null
+  install.cancelled = false
   try {
     await downloadModel((p: DownloadProgress) => {
       if (p.stage === 'downloading') {
@@ -65,6 +77,8 @@ async function runInstall() {
         install.total = p.total ?? 0
       } else if (p.stage === 'failed') {
         install.error = p.error ?? '下载失败'
+      } else if (p.stage === 'cancelled') {
+        install.cancelled = true
       }
     })
   } catch (e) {
@@ -311,11 +325,21 @@ onBeforeUnmount(() => controller?.abort())
             （{{ formatBytes(install.written) }} / {{ formatBytes(install.total) }}）
           </span>
         </p>
+        <div class="actions">
+          <button @click="stopInstall">取消下载</button>
+        </div>
+        <p v-if="install.written > 0" class="hint">
+          取消会删除已下载的部分，下次从零开始。已下载
+          {{ formatBytes(install.written) }}。
+        </p>
       </template>
       <template v-else>
         <div class="actions">
-          <button class="primary" @click="runInstall">下载模型</button>
+          <button class="primary" @click="runInstall">
+            {{ install.cancelled ? '重新下载模型' : '下载模型' }}
+          </button>
         </div>
+        <p v-if="install.cancelled" class="hint">下载已取消。</p>
       </template>
 
       <p v-if="install.error" class="error">{{ install.error }}</p>

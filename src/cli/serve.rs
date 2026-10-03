@@ -50,7 +50,7 @@ use axum::{
 use clap::Args;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use tokio::sync::broadcast;
+use tokio::sync::{Mutex, broadcast};
 use tracing::{debug, error, info, warn};
 
 use crate::audio::TARGET_SAMPLE_RATE;
@@ -253,6 +253,7 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         ingest,
         live,
         rtmp_port: args.rtmp_port,
+        download: Mutex::new(None),
     });
 
     let mut app = Router::new()
@@ -264,6 +265,7 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         // Whether the model is usable, and a way to fetch it.
         .route("/api/model", get(handler_model_status))
         .route("/api/model/download", post(handler_model_download))
+        .route("/api/model/cancel", post(handler_model_cancel))
         // The caption appearance, shared by the console and the overlay.
         .route(
             "/api/live/caption",
@@ -440,6 +442,12 @@ pub struct AppState {
     pub live: Option<crate::live::LiveSubtitles>,
     /// Port the RTMP listener bound, for display.
     pub rtmp_port: u16,
+    /// The download in progress, if any.
+    ///
+    /// Held so it can be cancelled: the transfer runs on a blocking thread and
+    /// owns a half-written file, so without a handle the only way to stop it
+    /// would be to kill the process.
+    pub download: Mutex<Option<Arc<crate::paths::Cancel>>>,
 }
 
 /// Report whether the recognition model is available.
@@ -458,6 +466,21 @@ async fn handler_model_download(State(app): State<Arc<AppState>>) -> Response {
         return Json(serde_json::json!({"stage": "done"})).into_response();
     }
 
+    // One download at a time. A second request would write the same files
+    // through the same temporary names and corrupt both.
+    let cancel = Arc::new(crate::paths::Cancel::new());
+    {
+        let mut slot = app.download.lock().await;
+        if slot.is_some() {
+            return (
+                StatusCode::CONFLICT,
+                "a download is already in progress",
+            )
+                .into_response();
+        }
+        *slot = Some(cancel.clone());
+    }
+
     let dir = app.engine.models_dir();
 
     // Newline-delimited JSON over a channel-backed body, so the interface can
@@ -468,8 +491,9 @@ async fn handler_model_download(State(app): State<Arc<AppState>>) -> Response {
     // The download is blocking HTTP; running it on the async runtime would
     // stall every other task, including the interface showing the progress.
     let progress = tx.clone();
+    let app_done = app.clone();
     tokio::task::spawn_blocking(move || {
-        let outcome = crate::paths::download_models_reporting(&dir, |written, total| {
+        let outcome = crate::paths::download_models_cancellable(&dir, &cancel, |written, total| {
             let line = serde_json::json!({
                 "stage": "downloading",
                 "written": written,
@@ -482,9 +506,22 @@ async fn handler_model_download(State(app): State<Arc<AppState>>) -> Response {
 
         let line = match outcome {
             Ok(()) => serde_json::json!({"stage": "done"}),
+            // A cancelled download is a decision, not a failure, and the
+            // interface says so rather than showing it in red.
+            Err(err) if format!("{err:#}").contains("cancelled") => {
+                serde_json::json!({"stage": "cancelled"})
+            }
             Err(err) => serde_json::json!({"stage": "failed", "error": format!("{err:#}")}),
         };
         let _ = progress.blocking_send(Ok(axum::body::Bytes::from(format!("{line}\n"))));
+
+        // Released here, in the blocking task, because this is the moment the
+        // transfer is genuinely over. Clearing it in the request handler would
+        // free the slot while the file was still being written.
+        //
+        // `blocking_lock` rather than `block_on`: this is a blocking thread, and
+        // the runtime would panic if asked to drive a future on it.
+        *app_done.download.blocking_lock() = None;
     });
 
     (
@@ -492,6 +529,18 @@ async fn handler_model_download(State(app): State<Arc<AppState>>) -> Response {
         axum::body::Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
     )
         .into_response()
+}
+
+/// Stop the download in progress, if any.
+async fn handler_model_cancel(State(app): State<Arc<AppState>>) -> Response {
+    let taken = app.download.lock().await.clone();
+    match taken {
+        Some(cancel) => {
+            cancel.cancel();
+            Json(serde_json::json!({"cancelled": true})).into_response()
+        }
+        None => Json(serde_json::json!({"cancelled": false})).into_response(),
+    }
 }
 
 /// Report what the live path is doing, for the console to display.

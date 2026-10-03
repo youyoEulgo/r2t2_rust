@@ -198,7 +198,7 @@ export async function modelStatus(): Promise<ModelStatus> {
 
 /** One progress line from the model download. */
 export interface DownloadProgress {
-  stage: 'downloading' | 'done' | 'failed'
+  stage: 'downloading' | 'done' | 'cancelled' | 'failed'
   written?: number
   total?: number | null
   error?: string
@@ -236,6 +236,14 @@ export async function downloadModel(
     }
   }
   if (buffered.trim()) onProgress(JSON.parse(buffered.trim()) as DownloadProgress)
+}
+
+/** Stop the download in progress. */
+export async function cancelModelDownload(): Promise<boolean> {
+  const res = await fetch('/api/model/cancel', { method: 'POST' })
+  if (!res.ok) throw new Error(await readError(res))
+  const body = (await res.json()) as { cancelled: boolean }
+  return body.cancelled
 }
 
 export async function liveStatus(): Promise<LiveStatus> {

@@ -208,12 +208,44 @@ pub fn download_models(dir: &Path) -> Result<()> {
 /// immediately rather than after the first byte arrives.
 pub const MODEL_BYTES: u64 = 1_834_000_000 + 348_000_000;
 
+/// Set by the caller to stop a download in progress.
+///
+/// A cooperative flag rather than a task abort: the transfer is a blocking read
+/// loop that also owns a half-written file, and it has to be given the chance
+/// to remove that file before it stops.
+#[derive(Debug, Default)]
+pub struct Cancel(std::sync::atomic::AtomicBool);
+
+impl Cancel {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Ask the download to stop.
+    pub fn cancel(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
 /// Download the model pair, reporting progress.
 ///
 /// `progress` receives bytes written so far and the total when the server
 /// states one. Called from a blocking context, so it must not block.
 pub fn download_models_reporting(
     dir: &Path,
+    progress: impl FnMut(u64, Option<u64>),
+) -> Result<()> {
+    download_models_cancellable(dir, &Cancel::new(), progress)
+}
+
+/// Download the model pair, stopping if asked.
+pub fn download_models_cancellable(
+    dir: &Path,
+    cancel: &Cancel,
     mut progress: impl FnMut(u64, Option<u64>),
 ) -> Result<()> {
     std::fs::create_dir_all(dir)
@@ -228,7 +260,7 @@ pub fn download_models_reporting(
             continue;
         }
         eprintln!("downloading {file} from {base} ...");
-        fetch_reporting(&url, &dest, &mut progress).with_context(|| {
+        fetch_cancellable(&url, &dest, cancel, &mut progress).with_context(|| {
             format!(
                 "could not download {file}\n\
                  If huggingface.co is unreachable, set HF_ENDPOINT to a mirror, e.g.\n\
@@ -243,9 +275,10 @@ pub fn download_models_reporting(
 ///
 /// Downloads to a temporary name and renames on success, so an interrupted
 /// transfer never leaves a truncated file that looks complete.
-fn fetch_reporting(
+fn fetch_cancellable(
     url: &str,
     dest: &Path,
+    cancel: &Cancel,
     progress: &mut impl FnMut(u64, Option<u64>),
 ) -> Result<()> {
     let client = reqwest::blocking::Client::builder()
@@ -268,6 +301,14 @@ fn fetch_reporting(
     let mut buf = vec![0u8; 256 * 1024];
 
     loop {
+        // Checked between reads, so cancelling takes effect within one buffer
+        // rather than at the end of a multi-gigabyte transfer.
+        if cancel.is_cancelled() {
+            drop(file);
+            let _ = std::fs::remove_file(&tmp);
+            bail!("download cancelled");
+        }
+
         use std::io::Read as _;
         let n = response.read(&mut buf).context("transfer interrupted")?;
         if n == 0 {
