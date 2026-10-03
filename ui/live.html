@@ -6,7 +6,10 @@
     <title>r2t2 · 实时字幕</title>
   </head>
   <body class="caption-page">
-    <div id="caption"></div>
+    <div id="stage">
+      <video id="video" playsinline muted autoplay></video>
+      <div id="caption"></div>
+    </div>
     <script type="module" src="/src/live.ts"></script>
   </body>
 </html>

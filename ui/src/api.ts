@@ -151,6 +151,10 @@ export interface LiveStatus {
   rtmp_port: number
   /** Most recent caption text. */
   latest: string
+  /** Whether the video path is on. */
+  video_enabled: boolean
+  /** Whether a playlist exists, i.e. video is actually arriving. */
+  video_ready: boolean
 }
 
 /** How the caption overlay is drawn. Mirrors the server's configuration. */

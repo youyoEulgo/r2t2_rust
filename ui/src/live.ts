@@ -9,6 +9,10 @@
 // changes arrive over the same connection, so editing it in the console takes
 // effect in OBS without touching the URL.
 
+// Type only: erased at build time, so hls.js is not pulled into the bundle
+// until `startVideo` actually asks for it.
+import type Hls from 'hls.js'
+
 import './live.css'
 
 interface CaptionConfig {
@@ -36,6 +40,72 @@ type Message =
 const MAX_SLOTS = 5
 
 const root = document.getElementById('caption') as HTMLElement
+const stage = document.getElementById('stage') as HTMLElement | null
+const video = document.getElementById('video') as HTMLVideoElement | null
+
+/**
+ * Whether the video path is on.
+ *
+ * The server decides: if `/hls/stream.m3u8` is there, there is a picture to
+ * show. The caption layer works either way, which is what makes it usable as a
+ * browser source in OBS where only the text is wanted.
+ */
+let hls: Hls | null = null
+
+async function startVideo() {
+  if (!video) return
+  const src = '/hls/stream.m3u8'
+
+  // Only pull in hls.js when there is a picture to play. It is by far the
+  // largest part of this page, and the common use — an OBS browser source
+  // showing captions only — never needs it.
+  const hasVideo = await fetch(src, { method: 'HEAD' })
+    .then((r) => r.ok)
+    .catch(() => false)
+  if (!hasVideo) {
+    stage?.classList.add('no-video')
+    return
+  }
+
+  const { default: HlsPlayer } = await import('hls.js')
+
+  if (HlsPlayer.isSupported()) {
+    hls = new HlsPlayer({
+      // Deliberately conservative: a live stream that keeps up matters more
+      // than one that starts a second sooner, and a small buffer causes
+      // constant stalling on an unstable source.
+      liveDurationInfinity: true,
+      // Start playback near the live edge.
+      liveSyncDurationCount: 2,
+      // Give up on a segment rather than waiting forever; a partly buffered
+      // stream should recover on its own.
+      fragLoadingMaxRetry: 6,
+      manifestLoadingMaxRetry: 4,
+    })
+    hls.loadSource(src)
+    hls.attachMedia(video)
+    hls.on(HlsPlayer.Events.ERROR, (_e, data) => {
+      // A missing playlist just means the video path is off, or no publisher
+      // has connected yet. Retry quietly; anything else is worth a line.
+      if (data.fatal) {
+        setTimeout(() => hls?.startLoad(), 2000)
+      }
+      if (data.details === 'manifestLoadError') {
+        stage?.classList.add('no-video')
+      }
+    })
+    hls.on(HlsPlayer.Events.MANIFEST_PARSED, () => {
+      stage?.classList.remove('no-video')
+      video.play().catch(() => {
+        // Autoplay may be blocked until the page is interacted with; OBS does
+        // not block it, a plain browser tab might.
+      })
+    })
+  } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+    // Safari plays HLS by itself.
+    video.src = src
+  }
+}
 
 /**
  * One element per possible line, created once and only ever re-texted.
@@ -273,3 +343,4 @@ function connect() {
 render()
 void loadConfig()
 connect()
+void startVideo()

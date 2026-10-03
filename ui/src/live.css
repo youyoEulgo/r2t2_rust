@@ -12,6 +12,34 @@
   height: 100vh;
 }
 
+/* The stage holds the picture and the captions on top of it. It fills the
+ * frame, so the page works both as a player and as a transparent overlay. */
+#stage {
+  position: fixed;
+  inset: 0;
+  background: #000;
+  overflow: hidden;
+}
+
+/* No video path: drop the black backdrop so the page is a bare caption layer,
+ * which is how it is used as an OBS browser source. */
+#stage.no-video {
+  background: transparent;
+}
+#stage.no-video #video {
+  display: none;
+}
+
+#video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  /* Letterbox rather than stretch, and never crop a caption. */
+  object-fit: contain;
+  background: #000;
+}
+
 #caption {
   --caption-size: 48px;
   --caption-color: #ffffff;
@@ -19,10 +47,10 @@
   --caption-bottom: 6%;
   --caption-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
 
-  position: fixed;
   left: 0;
   right: 0;
   bottom: var(--caption-bottom);
+  z-index: 1;
   display: flex;
   flex-direction: column;
   align-items: center;

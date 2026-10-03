@@ -265,9 +265,20 @@ than inside a Latin word.
 
 The overlay reads this at load and receives changes over the same WebSocket it
 uses for captions, so saving in the console updates an overlay that is already
-open in OBS — no refresh, and nothing to retype. Its bundle is 2.5 KB. Because
-it is only ever a caption layer, OBS composites it with the picture: nothing is
-re-encoded and no latency is added beyond recognition itself.
+open in OBS — no refresh, and nothing to retype.
+
+`/live` shows the incoming picture as well, underneath the captions, so the
+same page works as a player. The video is repackaged as HLS — copied, never
+re-encoded — and played with hls.js, which is loaded only when there is
+actually a picture; the page itself stays at 4.5 KB and an OBS browser source
+showing captions only never downloads the player at all.
+
+**Picture latency is about 5 seconds, and the sender sets it.** A segment can
+only end on a keyframe, so `-c:v copy` cannot cut more finely than the
+keyframe interval. In OBS, 输出 → 关键帧间隔 should be 2 seconds: the default
+is, but a larger value lengthens the segments and the delay with them, with
+nothing in this program able to compensate. `--no-video` turns the picture
+path off entirely, in which case `/live` is a bare caption layer.
 
 The file can also be edited by hand; it is re-read on each start, and values
 outside the sensible range are clamped rather than rejected.
@@ -378,6 +389,7 @@ src/
     mux.rs
     serve.rs
   config.rs      the configuration file
+  hls.rs         repackaging the incoming video for the browser player
   live.rs        live subtitles: incoming audio to published text
   rtmp.rs        RTMP ingest, for streams pushed by OBS
   main.rs        entry point

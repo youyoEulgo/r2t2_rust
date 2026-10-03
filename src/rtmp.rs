@@ -81,7 +81,7 @@ impl IngestHandle {
 ///
 /// `port` is where OBS points its "server URL"; the stream key is whatever the
 /// user types there, and is reported back so the interface can show it.
-pub async fn serve(port: u16) -> Result<IngestHandle> {
+pub async fn serve(port: u16, hls: Option<HlsSetup>) -> Result<IngestHandle> {
     let (tx, _) = broadcast::channel(256);
     let handle = IngestHandle {
         tx: tx.clone(),
@@ -99,8 +99,9 @@ pub async fn serve(port: u16) -> Result<IngestHandle> {
             match listener.accept().await {
                 Ok((socket, peer)) => {
                     let h = listener_handle.clone();
+                    let hls = hls.clone();
                     tokio::spawn(async move {
-                        if let Err(err) = handle_connection(socket, h).await {
+                        if let Err(err) = handle_connection(socket, h, hls.as_ref()).await {
                             debug!(%peer, error = %err, "RTMP connection ended");
                         }
                     });
@@ -116,8 +117,44 @@ pub async fn serve(port: u16) -> Result<IngestHandle> {
     Ok(handle)
 }
 
+/// HLS settings carried into a connection.
+#[derive(Clone)]
+pub struct HlsSetup {
+    pub output: crate::hls::HlsOutput,
+    pub config: crate::hls::HlsConfig,
+}
+
+/// The outputs a publishing session feeds.
+///
+/// Held together so a single `&mut` carries them through the event loop, and so
+/// they start and stop as a unit: both come from the same stream and there is
+/// no sense in one outliving the other.
+#[derive(Default)]
+struct Outputs {
+    audio: Option<AudioDecoder>,
+    video: Option<crate::hls::HlsPackager>,
+}
+
+impl Outputs {
+    fn start(
+        events: broadcast::Sender<IngestEvent>,
+        hls: Option<(&crate::hls::HlsOutput, &crate::hls::HlsConfig)>,
+    ) -> Result<Self> {
+        let audio = Some(AudioDecoder::spawn(events)?);
+        let video = match hls {
+            Some((output, config)) => Some(crate::hls::HlsPackager::spawn(output, config)?),
+            None => None,
+        };
+        Ok(Self { audio, video })
+    }
+}
+
 /// Drive one RTMP connection: feed bytes in, act on the events that come out.
-async fn handle_connection(socket: tokio::net::TcpStream, handle: IngestHandle) -> Result<()> {
+async fn handle_connection(
+    socket: tokio::net::TcpStream,
+    handle: IngestHandle,
+    hls: Option<&HlsSetup>,
+) -> Result<()> {
     let mut socket = socket;
 
     // The handshake is a separate protocol step that the session object does
@@ -169,7 +206,7 @@ async fn handle_connection(socket: tokio::net::TcpStream, handle: IngestHandle) 
     // Whether this connection has been allowed to publish, and under what key.
     let mut approved_stream: Option<String> = None;
     // The decoder feeding off this connection, created once publishing starts.
-    let mut decoder: Option<AudioDecoder> = None;
+    let mut outputs = Outputs::default();
 
     // Anything the handshake did not consume belongs to the session.
     if !carry.is_empty() {
@@ -179,7 +216,8 @@ async fn handle_connection(socket: tokio::net::TcpStream, handle: IngestHandle) 
             &mut socket,
             &handle,
             &mut approved_stream,
-            &mut decoder,
+            &mut outputs,
+            hls,
         )
         .await?;
     }
@@ -206,7 +244,8 @@ async fn handle_connection(socket: tokio::net::TcpStream, handle: IngestHandle) 
                         &mut socket,
                         &handle,
                         &mut approved_stream,
-                        &mut decoder,
+                        &mut outputs,
+                        hls,
                     )
                     .await?;
                 }
@@ -225,13 +264,15 @@ async fn handle_connection(socket: tokio::net::TcpStream, handle: IngestHandle) 
 }
 
 /// Feed leftover bytes into the session and act on what comes back.
+#[allow(clippy::too_many_arguments)]
 async fn feed_session(
     session: &mut ServerSession,
     bytes: &[u8],
     socket: &mut tokio::net::TcpStream,
     handle: &IngestHandle,
     approved_stream: &mut Option<String>,
-    decoder: &mut Option<AudioDecoder>,
+    outputs: &mut Outputs,
+    hls: Option<&HlsSetup>,
 ) -> Result<()> {
     let results = session
         .handle_input(bytes)
@@ -242,7 +283,7 @@ async fn feed_session(
                 socket.write_all(&packet.bytes).await?;
             }
             ServerSessionResult::RaisedEvent(event) => {
-                handle_event(event, session, socket, handle, approved_stream, decoder).await?;
+                handle_event(event, session, socket, handle, approved_stream, outputs, hls).await?;
             }
             ServerSessionResult::UnhandleableMessageReceived(msg) => {
                 debug!(?msg, "unhandled RTMP message");
@@ -253,13 +294,15 @@ async fn feed_session(
 }
 
 /// Act on one session event.
+#[allow(clippy::too_many_arguments)]
 async fn handle_event(
     event: ServerSessionEvent,
     session: &mut ServerSession,
     socket: &mut tokio::net::TcpStream,
     handle: &IngestHandle,
     approved_stream: &mut Option<String>,
-    decoder: &mut Option<AudioDecoder>,
+    outputs: &mut Outputs,
+    hls: Option<&HlsSetup>,
 ) -> Result<()> {
     match event {
         ServerSessionEvent::ConnectionRequested { request_id, app_name } => {
@@ -306,25 +349,29 @@ async fn handle_event(
                 state.publishing = true;
                 state.stream_key = stream_key.clone();
             }
-            *decoder = Some(AudioDecoder::spawn(handle.tx.clone())?);
+            *outputs = Outputs::start(handle.tx.clone(), hls.as_ref().map(|h| (&h.output, &h.config)))?;
             let _ = handle.tx.send(IngestEvent::Published { stream_key });
         }
 
         ServerSessionEvent::AudioDataReceived { data, .. } => {
-            if let Some(decoder) = decoder.as_mut() {
+            if let Some(decoder) = outputs.audio.as_mut() {
                 decoder.push(&data).await?;
+            }
+            if let Some(packager) = outputs.video.as_mut() {
+                packager.push(crate::rtmp::TAG_AUDIO, &data).await?;
             }
         }
 
-        ServerSessionEvent::VideoDataReceived { .. } => {
-            // Not needed for the first stage: the subtitle path only listens.
-            // Step two will forward these to HLS.
+        ServerSessionEvent::VideoDataReceived { data, .. } => {
+            if let Some(packager) = outputs.video.as_mut() {
+                packager.push(crate::rtmp::TAG_VIDEO, &data).await?;
+            }
         }
 
         ServerSessionEvent::PublishStreamFinished { stream_key, .. } => {
             info!(stream_key, "publisher stopped");
             *approved_stream = None;
-            *decoder = None;
+            *outputs = Outputs::default();
             let mut state = handle.state.lock().await;
             state.publishing = false;
             state.stream_key.clear();
@@ -340,11 +387,42 @@ async fn handle_event(
 // audio decoding
 // --------------------------------------------------------------------------- //
 
-/// A minimal FLV header: signature, version, flags (audio present), and the
-/// zero-length first tag size the format requires.
-fn flv_header() -> [u8; 13] {
-    *b"FLV\x01\x04\x00\x00\x00\x09\x00\x00\x00\x00"
+/// A minimal FLV header: signature, version, flags saying which streams are
+/// present, and the zero-length first tag size the format requires.
+pub fn flv_header(has_audio: bool, has_video: bool) -> [u8; 13] {
+    let flags = (has_audio as u8) | ((has_video as u8) << 2);
+    let mut h = [0u8; 13];
+    h[..3].copy_from_slice(b"FLV");
+    h[3] = 1; // version
+    h[4] = flags;
+    // bytes 5..9 are the header size, always 9.
+    h[5..9].copy_from_slice(&9u32.to_be_bytes());
+    // bytes 9..13 are the first tag size, always zero for a live stream.
+    h
 }
+
+/// Wrap an RTMP message body into an FLV tag.
+///
+/// The RTMP payload is the *body* of a tag, not a whole stream, so it has to be
+/// given back its 11-byte header and 4-byte trailing size before ffmpeg will
+/// accept it.
+pub fn flv_tag(tag_type: u8, body: &[u8], timestamp: u32) -> Vec<u8> {
+    let len = body.len() as u32;
+    let mut out = Vec::with_capacity(body.len() + 15);
+    out.push(tag_type);
+    out.extend_from_slice(&len.to_be_bytes()[1..]);
+    out.extend_from_slice(&timestamp.to_be_bytes()[1..]);
+    out.push((timestamp >> 24) as u8);
+    out.extend_from_slice(&[0, 0, 0]); // stream id
+    out.extend_from_slice(body);
+    out.extend_from_slice(&(len + 11).to_be_bytes());
+    out
+}
+
+/// FLV tag type for audio.
+pub const TAG_AUDIO: u8 = 0x08;
+/// FLV tag type for video.
+pub const TAG_VIDEO: u8 = 0x09;
 
 /// Turns RTMP audio tags into 16 kHz mono PCM.
 ///
@@ -443,7 +521,7 @@ impl AudioDecoder {
         let mut packet = Vec::with_capacity(data.len() + 16);
 
         if self.timestamp == 0 {
-            packet.extend_from_slice(&flv_header());
+            packet.extend_from_slice(&flv_header(true, false));
         }
 
         // FLV tag: type (1) + data size (3) + timestamp (3) + ts ext (1) +
