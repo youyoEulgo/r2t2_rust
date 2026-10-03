@@ -64,6 +64,22 @@ sudo apt install cmake build-essential libclang-dev ffmpeg
 cargo build --release
 ```
 
+**Windows (x64)**
+
+Install the Visual Studio Build Tools with the **Desktop development with C++**
+workload, then install CMake, LLVM/Clang and FFmpeg. Make sure `cmake.exe`,
+`libclang.dll`, `ffmpeg.exe` and `ffprobe.exe` are on `PATH`. Use the MSVC Rust
+toolchain in a **Developer PowerShell for VS**:
+
+```powershell
+cargo build --release
+```
+
+The Windows build links llama.cpp statically, so the resulting `r2t2.exe` does
+not need a directory of llama.cpp DLLs copied beside it. Double-clicking it
+starts the server and opens the browser; use `r2t2.exe --open=false` from a
+terminal or service.
+
 Requirements, by platform:
 
 | | |

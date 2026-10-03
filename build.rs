@@ -218,9 +218,6 @@ fn configure_and_build(source: &Path, build: &Path) {
         // this build does not run, and nothing here calls it.
         "-DLLAMA_BUILD_APP=OFF",
         "-DLLAMA_CURL=OFF",
-        // Shared libraries, so one build serves every binary and the rpath
-        // story stays simple.
-        "-DBUILD_SHARED_LIBS=ON",
         "-DGGML_BUILD_TESTS=OFF",
         "-DGGML_BUILD_EXAMPLES=OFF",
         // mtmd is the audio path: it carries the mel front end and the
@@ -230,6 +227,16 @@ fn configure_and_build(source: &Path, build: &Path) {
         // building locally.
         "-DGGML_NATIVE=ON",
     ]);
+
+    // Shared libraries keep Unix runtime loading simple. On Windows, static
+    // linking is more convenient for a double-clickable executable: the
+    // equivalent DLLs would have to be copied beside the exe after every
+    // Cargo build, while MSVC static libraries can be linked directly.
+    if cfg!(windows) {
+        cmake.arg("-DBUILD_SHARED_LIBS=OFF");
+    } else {
+        cmake.arg("-DBUILD_SHARED_LIBS=ON");
+    }
 
     if cuda {
         cmake.arg("-DGGML_CUDA=ON");
@@ -312,20 +319,35 @@ fn backend_name(cuda: bool) -> &'static str {
 /// Tell the linker where the libraries are and how to find them at runtime.
 fn link(lib_dir: &Path) {
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
-    println!("cargo:rustc-link-lib=dylib=llama");
-    println!("cargo:rustc-link-lib=dylib=mtmd");
+    #[cfg(windows)]
+    {
+        println!("cargo:rustc-link-lib=static=llama");
+        println!("cargo:rustc-link-lib=static=mtmd");
+    }
+    #[cfg(not(windows))]
+    {
+        println!("cargo:rustc-link-lib=dylib=llama");
+        println!("cargo:rustc-link-lib=dylib=mtmd");
+    }
 
     // Relative rpaths, so the binary keeps working when the tree is moved.
     //
-    // The spelling of "the directory holding this executable" depends on the
-    // object format: ELF, used on Linux, writes `$ORIGIN`, while Mach-O, used
-    // on macOS, writes `@loader_path`. Getting it wrong is not cosmetic — the
-    // linker rejects the unknown syntax, or the binary builds and then dies at
-    // startup with "Library not loaded".
-    println!("cargo:rustc-link-arg=-Wl,-rpath,{ORIGIN}/../lib");
-    println!("cargo:rustc-link-arg=-Wl,-rpath,{ORIGIN}");
-    // The build directory, for running straight out of target/<profile>/.
-    println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir.display());
+    // ELF (Linux) spells the executable directory `$ORIGIN`; Mach-O (macOS)
+    // spells it `@loader_path`. Windows has no rpath at all: the normal DLL
+    // search order includes the executable's directory, so adding Unix linker
+    // flags there would make an MSVC build fail.
+    #[cfg(unix)]
+    {
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{ORIGIN}/../lib");
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{ORIGIN}");
+        // The build directory, for running straight out of target/<profile>/.
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir.display());
+    }
+
+    #[cfg(windows)]
+    {
+        let _ = lib_dir;
+    }
 }
 
 /// How the platform spells "the directory holding this executable".

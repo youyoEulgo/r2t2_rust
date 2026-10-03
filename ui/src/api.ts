@@ -184,9 +184,19 @@ export async function saveCaptionConfig(
 
 /** Whether the recognition model is available. */
 export interface ModelStatus {
+  /** Whether the engine has been loaded and can be used right now. */
   ready: boolean
+  /** Whether the weights are present on disk. */
   model_present: boolean
+  /**
+   * Whether recognition will work.
+   *
+   * Distinct from `ready`: the engine loads on first use, so `ready` is false
+   * on a healthy installation that has not transcribed anything yet.
+   */
+  usable: boolean
   models_dir: string
+  /** Why loading failed, if it was attempted and did. */
   error: string | null
 }
 

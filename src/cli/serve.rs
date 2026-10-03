@@ -491,7 +491,7 @@ async fn handler_model_download(State(app): State<Arc<AppState>>) -> Response {
     // The download is blocking HTTP; running it on the async runtime would
     // stall every other task, including the interface showing the progress.
     let progress = tx.clone();
-    let app_done = app.clone();
+    let app_finished = app.clone();
     tokio::task::spawn_blocking(move || {
         let outcome = crate::paths::download_models_cancellable(&dir, &cancel, |written, total| {
             let line = serde_json::json!({
@@ -521,7 +521,7 @@ async fn handler_model_download(State(app): State<Arc<AppState>>) -> Response {
         //
         // `blocking_lock` rather than `block_on`: this is a blocking thread, and
         // the runtime would panic if asked to drive a future on it.
-        *app_done.download.blocking_lock() = None;
+        *app_finished.download.blocking_lock() = None;
     });
 
     (

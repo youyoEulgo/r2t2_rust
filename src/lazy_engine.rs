@@ -41,24 +41,30 @@ pub struct LazyEngine {
     /// Set once the engine exists. The `OnceCell` serialises the load, so two
     /// simultaneous first requests cannot each load several gigabytes.
     cell: OnceCell<Arc<Mutex<StreamEngine>>>,
-    /// Why the last attempt failed, for the interface to display.
+    /// Why the last *load* failed, when the files were there.
     ///
-    /// Kept because the engine may be missing for reasons the user can fix —
-    /// no weights yet, a download interrupted halfway — and the interface has
-    /// to be able to say which.
-    last_error: Mutex<Option<String>>,
+    /// A missing file is not an error the user needs explained; a file that is
+    /// present and cannot be opened is.
+    load_error: Mutex<Option<String>>,
 }
 
 /// What the interface needs to know about the engine's availability.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct EngineStatus {
-    /// Whether the engine is loaded and ready.
+    /// Whether the engine has been loaded and can be used right now.
     pub ready: bool,
     /// Whether the weights are present on disk.
     pub model_present: bool,
+    /// Whether the weights can be used.
+    ///
+    /// Distinct from `ready`, and this is the field the interface should judge
+    /// by. The engine loads lazily, so `ready` stays false until something is
+    /// actually transcribed — reporting that as a fault would show an error on
+    /// a perfectly healthy installation that simply has not been used yet.
+    pub usable: bool,
     /// Where the weights are expected, so the interface can show the path.
     pub models_dir: String,
-    /// Why the engine is not ready, if it is not.
+    /// Why the engine could not be loaded, if an attempt was made and failed.
     pub error: Option<String>,
 }
 
@@ -68,7 +74,7 @@ impl LazyEngine {
             config,
             models_dir,
             cell: OnceCell::new(),
-            last_error: Mutex::new(None),
+            load_error: Mutex::new(None),
         }
     }
 
@@ -88,9 +94,6 @@ impl LazyEngine {
     }
 
     /// The engine, loading it if this is the first successful call.
-    ///
-    /// The error is recorded, so the interface can report why an earlier
-    /// attempt failed without having to repeat it.
     pub async fn get(&self) -> Result<Arc<Mutex<StreamEngine>>> {
         let cell = &self.cell;
         let result = cell
@@ -123,31 +126,37 @@ impl LazyEngine {
             .await;
 
         match &result {
-            Ok(_) => *self.last_error.lock().await = None,
+            Ok(_) => *self.load_error.lock().await = None,
             Err(err) => {
                 let text = format!("{err:#}");
                 warn!(error = %text, "could not load the model");
-                *self.last_error.lock().await = Some(text);
+                *self.load_error.lock().await = Some(text);
             }
         }
         result.cloned()
     }
 
     /// What the interface should show.
+    ///
+    /// Answered from the filesystem rather than from any remembered outcome.
+    /// The files are the fact: they can appear while the process runs, and a
+    /// cached verdict would go stale the moment a download finished.
     pub async fn status(&self) -> EngineStatus {
+        let present = self.model_present();
         EngineStatus {
             ready: self.is_ready(),
-            model_present: self.model_present(),
+            model_present: present,
+            usable: present,
             models_dir: self.models_dir.display().to_string(),
-            error: self.last_error.lock().await.clone(),
+            // A missing-file error is stale as soon as the files appear. The
+            // next recognition attempt will report a genuinely invalid model;
+            // the status endpoint should not keep showing the old failure.
+            error: if present {
+                None
+            } else {
+                self.load_error.lock().await.clone()
+            },
         }
     }
 
-    /// Forget a failed load so the next request tries again.
-    ///
-    /// Called after a download, because the previous failure was almost
-    /// certainly "the files are not there" and is no longer informative.
-    pub async fn reset(&self) {
-        *self.last_error.lock().await = None;
     }
-}

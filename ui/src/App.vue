@@ -350,9 +350,9 @@ onBeforeUnmount(() => controller?.abort())
       </p>
     </section>
 
-    <section v-else-if="model && !model.ready" class="panel notice">
+    <section v-else-if="model && !model.usable" class="panel notice">
       <h3>模型未能加载</h3>
-      <p class="error">{{ model.error }}</p>
+      <p class="error">{{ model.error ?? '加载失败，原因未知。' }}</p>
       <p class="hint">
         文件位于 <code>{{ model.models_dir }}</code>。修正后重新开始识别即可，
         服务无需重启。

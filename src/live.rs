@@ -23,6 +23,7 @@ use tracing::{debug, info, warn};
 
 use crate::rtmp::{IngestEvent, IngestHandle};
 use crate::lazy_engine::LazyEngine;
+use crate::stream::StreamEngine;
 
 /// What is sent to a viewer over `/ws/subtitles`.
 ///
@@ -104,6 +105,30 @@ impl LiveSubtitles {
 /// and the audio arriving from ffmpeg is an arbitrary size.
 const CHUNK_SECONDS: f32 = 0.16;
 
+/// Wait until the weights are usable, then load the engine.
+///
+/// Polls rather than watching the filesystem: a directory read every few
+/// seconds costs nothing next to a model load, and a watcher would have to
+/// cope with the many ways a download in progress can look finished without
+/// being so.
+async fn wait_for_engine(
+    engine: &Arc<LazyEngine>,
+) -> Option<Arc<Mutex<StreamEngine>>> {
+    let mut announced = false;
+    loop {
+        match engine.get().await {
+            Ok(loaded) => return Some(loaded),
+            Err(_) => {
+                if !announced {
+                    info!("waiting for the recognition model; captions begin once it is present");
+                    announced = true;
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            }
+        }
+    }
+}
+
 /// Start the live transcription task.
 ///
 /// `enabled` is the `--no-subtitles` switch: when false the ingest still runs
@@ -132,12 +157,14 @@ pub fn spawn(
             return;
         }
 
-        // The model may not be present yet, and an OBS connection should not
-        // wait on a download or fail because of one: publishing before the
-        // weights exist simply produces no captions until they do.
-        let Ok(engine) = engine.get().await else {
-            warn!("live subtitles are waiting for a usable model");
-            return;
+        // Waiting rather than giving up. The weights are normally fetched from
+        // the interface after the server has already started, and a task that
+        // exited on the first failure would leave live captions dead until the
+        // process was restarted. Meanwhile the published audio is still
+        // decoded, so the stream itself is not held up either way.
+        let engine = match wait_for_engine(&engine).await {
+            Some(engine) => engine,
+            None => return,
         };
 
         let mut state = engine.lock().await.init_state(

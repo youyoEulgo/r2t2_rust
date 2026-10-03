@@ -41,14 +41,27 @@ pub const MODEL_REPO: &str = "netease-youdao/Confucius4-R2T2-GGUF";
 
 /// Root of the program's data directory.
 pub fn data_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("XDG_DATA_HOME") {
-        if !dir.is_empty() {
-            return PathBuf::from(dir).join("r2t2");
-        }
+    #[cfg(windows)]
+    {
+        // `%APPDATA%` is the Windows equivalent of a per-user data home.
+        return std::env::var_os("APPDATA")
+            .filter(|d| !d.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("r2t2");
     }
-    home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".local/share/r2t2")
+
+    #[cfg(not(windows))]
+    {
+        if let Some(dir) = std::env::var_os("XDG_DATA_HOME") {
+            if !dir.is_empty() {
+                return PathBuf::from(dir).join("r2t2");
+            }
+        }
+        home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".local/share/r2t2")
+    }
 }
 
 /// Where the GGUF pair lives.
@@ -70,11 +83,25 @@ pub fn config_file() -> PathBuf {
     data_dir().join("config.toml")
 }
 
-/// `$HOME`, or `None` when it is not set.
+/// The user's data home, or `None` when the environment is unusable.
+///
+/// Unix uses `$HOME`. Windows normally exposes `%APPDATA%`; falling back to
+/// `%USERPROFILE%` keeps the program usable in stripped-down shells too.
 fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .filter(|h| !h.is_empty())
-        .map(PathBuf::from)
+    #[cfg(windows)]
+    {
+        std::env::var_os("APPDATA")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .filter(|h| !h.is_empty())
+            .map(PathBuf::from)
+    }
+
+    #[cfg(not(windows))]
+    {
+        std::env::var_os("HOME")
+            .filter(|h| !h.is_empty())
+            .map(PathBuf::from)
+    }
 }
 
 /// Resolve a model directory, downloading into the default location if needed.
@@ -394,6 +421,7 @@ mod tests {
         assert!(!has_model_pair(Path::new("/nonexistent/r2t2-test")));
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn data_dir_honours_xdg_data_home() {
         // The variable is process-wide, so this asserts the documented rule
