@@ -171,13 +171,39 @@ fn ensure_checkout(dir: &Path) {
     );
 }
 
+/// Check that a program exists, with advice the platform understands.
+///
+/// A missing tool otherwise surfaces as `No such file or directory` from a
+/// command the reader never typed, which says what failed but not what to
+/// install.
+fn require(program: &str, install: &str) {
+    let found = Command::new(program)
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    match found {
+        Ok(status) if status.success() => {}
+        _ => panic!(
+            "`{program}` is required to build llama.cpp but was not found.\n\
+             Install it with:\n\
+             \x20 {install}"
+        ),
+    }
+}
+
 /// Configure and compile llama.cpp.
 fn configure_and_build(source: &Path, build: &Path) {
+    #[cfg(target_os = "macos")]
+    require("cmake", "brew install cmake");
+    #[cfg(not(target_os = "macos"))]
+    require("cmake", "your package manager, e.g. apt install cmake");
+
     let cuda = cuda_requested();
 
     eprintln!(
         "r2t2: building llama.cpp for this machine ({}) — takes a few minutes, once",
-        if cuda { "CUDA + CPU" } else { "CPU only" }
+        backend_name(cuda)
     );
 
     let mut cmake = Command::new("cmake");
@@ -214,6 +240,13 @@ fn configure_and_build(source: &Path, build: &Path) {
         cmake.arg("-DGGML_CUDA=OFF");
     }
 
+    // Metal is what llama.cpp uses on macOS. It defaults to on there, but the
+    // default is someone else's to change, and a silent switch to the CPU would
+    // look like this program being inexplicably slow rather than misconfigured.
+    if cfg!(target_os = "macos") {
+        cmake.arg("-DGGML_METAL=ON");
+    }
+
     run(
         &mut cmake,
         "could not configure llama.cpp (is cmake installed and recent enough?)",
@@ -238,9 +271,15 @@ fn configure_and_build(source: &Path, build: &Path) {
 /// Whether to build the CUDA backend.
 ///
 /// Enabled when `nvcc` is present and the caller has not opted out. A missing
-/// toolkit is not an error: a CPU-only build still transcribes, just slower.
+/// toolkit is not an error and not a fallback to the CPU: on macOS the Metal
+/// backend is what llama.cpp selects by default, and on Linux a CPU build still
+/// transcribes, just slower. Saying "CPU only" there would be wrong twice over.
 fn cuda_requested() -> bool {
     if std::env::var("R2T2_CUDA").is_ok_and(|v| v == "0" || v.eq_ignore_ascii_case("false")) {
+        return false;
+    }
+    if cfg!(target_os = "macos") {
+        // `nvcc` does not exist on macOS and CUDA is not the backend there.
         return false;
     }
     let found = Command::new("nvcc")
@@ -250,9 +289,20 @@ fn cuda_requested() -> bool {
         .status()
         .is_ok_and(|s| s.success());
     if !found {
-        eprintln!("r2t2: nvcc not found, building the CPU backend only");
+        eprintln!("r2t2: nvcc not found; the CUDA backend will be skipped");
     }
     found
+}
+
+/// Which accelerator the build will actually use, for the progress message.
+fn backend_name(cuda: bool) -> &'static str {
+    if cuda {
+        "CUDA + CPU"
+    } else if cfg!(target_os = "macos") {
+        "Metal + CPU"
+    } else {
+        "CPU"
+    }
 }
 
 // --------------------------------------------------------------------------- //

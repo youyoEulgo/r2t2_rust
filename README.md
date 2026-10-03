@@ -42,17 +42,39 @@ startup and footprint difference.
 cargo build --release
 ```
 
-Produces `target/release/r2t2`.
+Produces `target/release/r2t2`. The first build clones and compiles llama.cpp,
+which takes several minutes; later builds reuse it.
 
-Requirements:
+**macOS**
+
+```sh
+xcode-select --install          # C++ and Metal toolchains
+brew install cmake ffmpeg libomp
+cargo build --release
+```
+
+`libomp` is what llama.cpp needs for OpenMP; without it the build fails while
+linking. CMake is required because llama.cpp is configured and built with it.
+
+**Linux**
+
+```sh
+# Debian/Ubuntu
+sudo apt install cmake build-essential libclang-dev ffmpeg
+cargo build --release
+```
+
+Requirements, by platform:
 
 | | |
 |---|---|
 | Rust | 1.85+ (edition 2024) |
+| `cmake` | **required**, to build llama.cpp |
 | `libclang` | build only, for bindgen |
 | `ffmpeg` | for non-WAV input, and for `r2t2 mux` |
-| CUDA toolkit | optional, Linux only — for the GPU backend |
-| Xcode command line tools | macOS only, for the C++ and Metal toolchain |
+| Xcode command line tools | macOS: the C++ and Metal toolchains |
+| `libomp` | macOS: OpenMP, which llama.cpp needs |
+| CUDA toolkit | optional, Linux only, for the CUDA backend |
 
 The GPU backend is chosen automatically:
 
