@@ -393,7 +393,7 @@ onBeforeUnmount(() => controller?.abort())
           </template>
           <template v-else>
             <strong>选择文件</strong>
-            <span class="muted">或拖放到这里 · 音频输出 TXT，视频输出 SRT 与 MKV</span>
+            <span class="muted">或拖放到这里 · 音频、视频均可，输出 TXT 与 SRT</span>
           </template>
         </label>
       </div>
