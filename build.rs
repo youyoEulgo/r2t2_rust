@@ -266,12 +266,23 @@ fn link(lib_dir: &Path) {
     println!("cargo:rustc-link-lib=dylib=mtmd");
 
     // Relative rpaths, so the binary keeps working when the tree is moved.
-    // `$ORIGIN` is the directory holding the executable.
-    println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN/../lib");
-    println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
+    //
+    // The spelling of "the directory holding this executable" depends on the
+    // object format: ELF, used on Linux, writes `$ORIGIN`, while Mach-O, used
+    // on macOS, writes `@loader_path`. Getting it wrong is not cosmetic — the
+    // linker rejects the unknown syntax, or the binary builds and then dies at
+    // startup with "Library not loaded".
+    println!("cargo:rustc-link-arg=-Wl,-rpath,{ORIGIN}/../lib");
+    println!("cargo:rustc-link-arg=-Wl,-rpath,{ORIGIN}");
     // The build directory, for running straight out of target/<profile>/.
     println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir.display());
 }
+
+/// How the platform spells "the directory holding this executable".
+#[cfg(target_os = "macos")]
+const ORIGIN: &str = "@loader_path";
+#[cfg(not(target_os = "macos"))]
+const ORIGIN: &str = "$ORIGIN";
 
 /// Generate the FFI declarations from the headers.
 ///

@@ -27,7 +27,12 @@ fn main() -> ExitCode {
 
     // `serve` is async and installs its own tracing subscriber; the file modes
     // are synchronous and report through stderr directly.
-    let result: Result<()> = match cli.command {
+    //
+    // A missing subcommand means `serve`, using the settings that were
+    // flattened onto the top level. An explicit `serve` uses the copy parsed
+    // after the subcommand, so `r2t2 serve --port 9000` keeps working.
+    let command = cli.command.unwrap_or(Command::Serve(cli.serve));
+    let result: Result<()> = match command {
         Command::Transcribe(args) => r2t2::cli::transcribe::run(&args),
         Command::Mux(args) => r2t2::cli::mux::run(&args),
         Command::Serve(args) => {

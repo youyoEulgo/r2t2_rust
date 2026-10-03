@@ -105,14 +105,23 @@ pub fn resolve_models(explicit: Option<&Path>, assume_yes: bool) -> Result<PathB
 
     // Nothing usable in the default place.
     if !prompt_to_download(&dir, assume_yes)? {
+        // Printed rather than executed, and using only tools every platform
+        // already has. `curl` ships with macOS, Linux and Windows, whereas the
+        // `hf` CLI this used to suggest needs a Python install that the rest
+        // of the program deliberately avoids.
+        let base = endpoint();
         bail!(
-            "no model found in {}\n\
+            "no model found in {dir}\n\
              Download it manually with:\n\
-             \x20 hf download {MODEL_REPO} \\\n\
-             \x20     --include \"{DEFAULT_MODEL_FILE}\" \"{DEFAULT_MMPROJ_FILE}\" \\\n\
-             \x20     --local-dir {}",
-            dir.display(),
-            dir.display()
+             \x20 curl -L --create-dirs -o \"{dir}/{model}\" \\\n\
+             \x20     {base}/{MODEL_REPO}/resolve/main/{model}\n\
+             \x20 curl -L --create-dirs -o \"{dir}/{mmproj}\" \\\n\
+             \x20     {base}/{MODEL_REPO}/resolve/main/{mmproj}\n\
+             \n\
+             Set HF_ENDPOINT to download from a mirror instead.",
+            dir = dir.display(),
+            model = DEFAULT_MODEL_FILE,
+            mmproj = DEFAULT_MMPROJ_FILE,
         );
     }
 

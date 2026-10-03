@@ -49,10 +49,23 @@ Requirements:
 | | |
 |---|---|
 | Rust | 1.85+ (edition 2024) |
-| CUDA toolkit | for the GPU backend, e.g. `/opt/cuda` |
-| NVIDIA driver | at runtime |
 | `libclang` | build only, for bindgen |
 | `ffmpeg` | for non-WAV input, and for `r2t2 mux` |
+| CUDA toolkit | optional, Linux only — for the GPU backend |
+| Xcode command line tools | macOS only, for the C++ and Metal toolchain |
+
+The GPU backend is chosen automatically:
+
+| platform | backend | what it needs |
+|---|---|---|
+| Linux | CUDA if `nvcc` is on `PATH` | the NVIDIA driver at runtime |
+| Linux | otherwise CPU | — |
+| macOS | Metal | nothing beyond the toolchain |
+
+macOS on Apple Silicon is a first-class target; the Metal backend is what
+llama.cpp selects there by default, and the build needs no CUDA at all. Intel
+Macs are not tested and will fall back to the CPU, which is slow enough to be
+unpleasant for this model.
 
 **llama.cpp is compiled from source, for your machine.** The first build
 clones it at a pinned revision into `third_party/` and compiles it, which takes
@@ -128,15 +141,22 @@ Behind a mirror, set `HF_ENDPOINT`:
 HF_ENDPOINT=https://hf-mirror.com r2t2 transcribe -i movie.mp4
 ```
 
-To place the weights elsewhere, pass `--gguf-dir`; an explicit path is trusted
-as-is and never triggers a download:
+To place the weights elsewhere, download them with `curl` — which every
+supported platform already has — and point `--gguf-dir` at the result. An
+explicit path is trusted as-is and never triggers a download:
 
 ```sh
-hf download netease-youdao/Confucius4-R2T2-GGUF \
-    --include "Confucius4-R2T2-Q8_0.gguf" "mmproj-Confucius4-R2T2-Q8_0.gguf" \
-    --local-dir /somewhere/gguf
+mkdir -p /somewhere/gguf && cd /somewhere/gguf
+for f in Confucius4-R2T2-Q8_0.gguf mmproj-Confucius4-R2T2-Q8_0.gguf; do
+    curl -L -O "https://huggingface.co/netease-youdao/Confucius4-R2T2-GGUF/resolve/main/$f"
+done
+
 r2t2 transcribe -i movie.mp4 --gguf-dir /somewhere/gguf
 ```
+
+Set `HF_ENDPOINT` to a mirror if huggingface.co is unreachable, for example
+`HF_ENDPOINT=https://hf-mirror.com`. The same variable affects the built-in
+downloader, which is plain HTTP and needs no Python.
 
 The directory must hold **exactly one** `mmproj*.gguf` and **exactly one**
 other `*.gguf`. That rule catches the common mistake of dropping several
@@ -158,6 +178,26 @@ well over a thousand lines for a single short file — and would bury this
 program's messages. `--verbose` keeps it.
 
 `-v` prints the version; verbosity is `--verbose` only.
+
+### Running with no arguments
+
+```sh
+r2t2
+```
+
+starts the live caption server (`serve`), prints the address, and opens it in
+the default browser. This exists so that double-clicking the executable on
+Windows lands somewhere useful rather than in a console window that flashes a
+usage screen and vanishes.
+
+Server flags work here too, since they are accepted before the subcommand as
+well as after it:
+
+```sh
+r2t2 --port 9000          # the same as: r2t2 serve --port 9000
+r2t2 --no-rtmp            # WebSocket ingest only
+r2t2 --open=false         # do not launch a browser
+```
 
 ### Transcribe a file
 

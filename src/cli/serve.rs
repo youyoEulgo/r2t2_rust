@@ -80,6 +80,9 @@ const QUALITY_REPEAT_THRESHOLD: usize = 5;
 const RECV_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Arguments for `r2t2 serve`.
+///
+/// `Default` is what a bare `r2t2` uses, so the values here are the ones a
+/// first run gets. They must stay in step with the clap defaults below.
 #[derive(Debug, Args)]
 pub struct ServeArgs {
     #[command(flatten)]
@@ -121,8 +124,8 @@ pub struct ServeArgs {
 
     /// Decode incoming RTMP audio but produce no subtitles.
     ///
-    /// Useful when the stream is being forwarded for its picture alone, or
-    /// while testing the video path without paying for recognition.
+    /// Useful for checking that OBS can connect, without paying for
+    /// recognition on every chunk while doing so.
     #[arg(long = "no-subtitles")]
     pub no_subtitles: bool,
 
@@ -131,6 +134,35 @@ pub struct ServeArgs {
     /// Defaults to `~/.local/share/r2t2/work`, so results survive a reboot.
     #[arg(long = "work-dir", value_name = "DIR")]
     pub work_dir: Option<PathBuf>,
+
+    /// Open the web interface in the default browser once the server is up.
+    ///
+    /// On by default: a bare `r2t2` is what a Windows user gets by
+    /// double-clicking the executable, and a program that starts a server
+    /// without showing the address is indistinguishable from one that failed.
+    #[arg(long = "open", default_value_t = true, action = clap::ArgAction::Set)]
+    pub open: bool,
+}
+
+impl Default for ServeArgs {
+    fn default() -> Self {
+        // Kept in step with the clap defaults above; `tests::bare_run_matches
+        // _the_clap_defaults` fails if they drift.
+        Self {
+            common: CommonArgs::default(),
+            bind: "0.0.0.0".to_string(),
+            port: 8272,
+            vad_sensitivity: "aggressive".to_string(),
+            vad_min_silence_ms: 400,
+            vad_min_speech_ms: 160,
+            no_web: false,
+            rtmp_port: 1935,
+            no_rtmp: false,
+            no_subtitles: false,
+            work_dir: None,
+            open: true,
+        }
+    }
 }
 
 /// Run the server. Blocks until interrupted.
@@ -241,11 +273,63 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         .with_context(|| format!("could not bind {addr}"))?;
     info!(%addr, "listening: ws://{addr}/asr_stream_api_v1");
 
+    // Printed unconditionally, because the address is the one thing a user
+    // needs and the log line above may be the only place it appears.
+    let web_enabled = !args.no_web;
+    let url = interface_url(&args.bind, args.port);
+    if web_enabled {
+        eprintln!("r2t2 is running. Open {url}");
+        if args.open {
+            open_browser(&url);
+        }
+    }
+
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await
         .context("server error")?;
     Ok(())
+}
+
+/// The address to show a person.
+///
+/// A server bound to every interface is reachable at `localhost` and that is
+/// what someone types, but the literal `0.0.0.0` in a browser means something
+/// else again, so it is translated rather than passed through.
+fn interface_url(bind: &str, port: u16) -> String {
+    let host = match bind {
+        "0.0.0.0" | "::" | "[::]" => "localhost",
+        other => other,
+    };
+    format!("http://{host}:{port}/")
+}
+
+/// Hand a URL to the platform's default browser.
+///
+/// Best effort: a headless machine has no browser, and failing to open one is
+/// not a reason to refuse to serve. The URL has already been printed.
+fn open_browser(url: &str) {
+    #[cfg(target_os = "windows")]
+    let program = "cmd";
+    #[cfg(target_os = "macos")]
+    let program = "open";
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let program = "xdg-open";
+
+    let mut command = std::process::Command::new(program);
+    // `start` is a shell builtin on Windows, and its first argument is treated
+    // as the window title, hence the empty string.
+    #[cfg(target_os = "windows")]
+    command.args(["/C", "start", ""]);
+    command.arg(url);
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+
+    if let Err(err) = command.spawn() {
+        warn!(error = %err, "could not open a browser");
+    }
 }
 
 // --------------------------------------------------------------------------- //
@@ -829,4 +913,23 @@ fn decode_wav_bytes(bytes: &[u8]) -> Result<Vec<f32>> {
         out.push(mono[j] + (mono[j + 1] - mono[j]) * frac as f32);
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::interface_url;
+
+    #[test]
+    fn the_shown_address_is_one_a_person_can_type() {
+        // `0.0.0.0` means "every interface" to a server and something else
+        // entirely to a browser, so it is translated.
+        assert_eq!(interface_url("0.0.0.0", 8272), "http://localhost:8272/");
+        assert_eq!(interface_url("::", 8272), "http://localhost:8272/");
+    }
+
+    #[test]
+    fn an_explicit_bind_address_is_kept() {
+        assert_eq!(interface_url("192.168.1.5", 9000), "http://192.168.1.5:9000/");
+        assert_eq!(interface_url("127.0.0.1", 8272), "http://127.0.0.1:8272/");
+    }
 }
