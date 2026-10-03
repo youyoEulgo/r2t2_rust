@@ -32,6 +32,14 @@
   pointer-events: none;
 }
 
+/* `hidden` must win over the display below: the overlay pre-creates a slot per
+ * possible line and hides the ones it is not using, and a bare `display` in a
+ * class beats the browser's `[hidden] { display: none }`. Without this the
+ * unused slots render as empty background bars. */
+.caption-line[hidden] {
+  display: none;
+}
+
 .caption-line {
   display: inline-block;
   max-width: 100%;
