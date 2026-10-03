@@ -237,14 +237,25 @@ OBS → 设置 → 推流 → 服务「自定义」
       串流密钥 （留空）
 ```
 
-The console's **直播字幕** tab shows the state and the exact URL to paste. The
-recognised text appears at `/live`, a caption overlay designed to be added to
-the OBS scene as a browser source:
+The console's **直播字幕** tab shows the ingest state and the exact URLs. The
+recognised text is exposed in two forms:
 
+| consumer | address | purpose |
+|---|---|---|
+| programs | `ws://127.0.0.1:8272/ws/subtitles` | structured JSON subtitle stream |
+| people / OBS browser source | `http://127.0.0.1:8272/live` | small CC-style preview overlay |
+
+The WebSocket first sends a status object, then one object for each incremental
+subtitle update:
+
+```json
+{"type":"status","enabled":true,"active":true,"latest":"已有字幕"}
+{"type":"subtitle","text":"完整当前文本","delta":"本次新增","reset":false,"at_ms":1532}
 ```
-http://127.0.0.1:8272/live                    # as it comes
-http://127.0.0.1:8272/live?size=64&transparent=1
-```
+
+`text` is authoritative, `delta` is convenient for append-only consumers, and
+`at_ms` is milliseconds since the current publisher connected. A consumer can
+reconnect at any time: the status object includes the latest complete text.
 
 Its appearance is set in the console's **直播字幕** tab and saved to
 `~/.local/share/r2t2/config.toml`:
@@ -265,38 +276,9 @@ than inside a Latin word.
 
 The overlay reads this at load and receives changes over the same WebSocket it
 uses for captions, so saving in the console updates an overlay that is already
-open in OBS — no refresh, and nothing to retype.
-
-`/live` shows the incoming picture as well, underneath the captions, so the
-same page works as a player. The video is repackaged as HLS — copied, never
-re-encoded — and played with hls.js, which is loaded only when there is
-actually a picture; the page itself stays at 4.5 KB and an OBS browser source
-showing captions only never downloads the player at all.
-
-### How the stream is handled
-
-`r2t2 serve` accepts one RTMP publisher and relays every message it sends to
-each subscriber. The subtitles and the picture are two of those subscribers,
-each an ffmpeg that dials in as an ordinary RTMP client:
-
-```
-OBS ──RTMP──> r2t2:1935 ──┬── ffmpeg ──> 16 kHz PCM ──> recognition ──> /ws/subtitles
-                          │
-                          └── ffmpeg ──> HLS ──> /hls/stream.m3u8 ──> /live
-```
-
-Nothing here parses FLV or rebuilds a container. ffmpeg already speaks RTMP, and
-letting it connect removes a whole class of problem: an earlier version piped
-hand-rebuilt FLV into ffmpeg, which worked for audio-only streams and stalled
-the moment video was present, because ffmpeg would not produce output until its
-stdout was drained while the task meant to drain it never ran.
-
-**Picture latency is about 5 seconds, and the sender sets it.** A segment can
-only end on a keyframe, so `-c:v copy` cannot cut more finely than the
-keyframe interval. In OBS, 输出 → 关键帧间隔 should be 2 seconds: the default
-is, but a larger value lengthens the segments and the delay with them, with
-nothing in this program able to compensate. `--no-video` turns the picture
-path off entirely, in which case `/live` is a bare caption layer.
+open in OBS — no refresh, and nothing to retype. Its bundle is 2.5 KB. Because
+it is only ever a caption layer, OBS composites it with the picture: nothing is
+re-encoded and no latency is added beyond recognition itself.
 
 The file can also be edited by hand; it is re-read on each start, and values
 outside the sensible range are clamped rather than rejected.
@@ -312,8 +294,8 @@ ffmpeg -re -i resources/test.wav -c:a aac -f flv rtmp://127.0.0.1:1935/live
 ```
 
 `--no-rtmp` disables the ingest, `--rtmp-port` moves it, and `--no-subtitles`
-accepts and decodes a stream without recognising it — so the picture path can
-be exercised without paying for recognition.
+accepts and decodes a stream without recognising it, which is useful for
+isolating the OBS-to-RTMP connection from the recognition path.
 
 ### Live audio over WebSocket
 
@@ -407,7 +389,6 @@ src/
     mux.rs
     serve.rs
   config.rs      the configuration file
-  hls.rs         repackaging the incoming video for the browser player
   live.rs        live subtitles: incoming audio to published text
   rtmp.rs        RTMP ingest, for streams pushed by OBS
   main.rs        entry point

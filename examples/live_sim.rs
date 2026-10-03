@@ -56,7 +56,7 @@ struct Header {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let mut reader = hound::WavReader::open(&cli.audio)
+    let reader = hound::WavReader::open(&cli.audio)
         .with_context(|| format!("could not open {}", cli.audio.display()))?;
     let spec = reader.spec();
     if spec.bits_per_sample != 16 {

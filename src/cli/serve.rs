@@ -126,16 +126,6 @@ pub struct ServeArgs {
     #[arg(long = "no-subtitles")]
     pub no_subtitles: bool,
 
-    /// Do not repackage the incoming video for the preview player.
-    #[arg(long = "no-video")]
-    pub no_video: bool,
-
-    /// Directory for HLS segments.
-    ///
-    /// Defaults to a directory under the work directory, cleared on start.
-    #[arg(long = "hls-dir", value_name = "DIR")]
-    pub hls_dir: Option<PathBuf>,
-
     /// Where uploaded files and their results are kept.
     ///
     /// Defaults to `~/.local/share/r2t2/work`, so results survive a reboot.
@@ -197,21 +187,6 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     // RTMP ingest runs alongside the WebSocket one, and each is independently
     // switchable so the subtitle path and the picture path can be tested on
     // their own.
-    // The HLS output is rebuilt from scratch each run: segments from an
-    // earlier stream would be served alongside the new ones and confuse a
-    // player about where the stream begins.
-    let hls = if args.no_rtmp || args.no_video {
-        None
-    } else {
-        let dir = args
-            .hls_dir
-            .clone()
-            .unwrap_or_else(|| crate::paths::work_dir().join("hls"));
-        let output = crate::hls::HlsOutput::new(dir);
-        crate::hls::cleanup(&output);
-        Some(output)
-    };
-
     let ingest = if args.no_rtmp {
         None
     } else {
@@ -225,22 +200,12 @@ pub async fn run(args: ServeArgs) -> Result<()> {
             Some(crate::live::spawn(
                 engine.clone(),
                 handle.clone(),
-                format!("rtmp://127.0.0.1:{}/live", args.rtmp_port),
                 args.common.context.clone(),
                 args.common.forced_language().map(str::to_owned),
                 !args.no_subtitles,
             ))
         }
     };
-
-    // Tell the HLS route where to read from before any request arrives, and
-    // start a packager whenever a publisher connects. Like the subtitle path,
-    // it follows the relay rather than being fed: ffmpeg dials in as its own
-    // RTMP client, so the two cannot interfere.
-    if let (Some(output), Some(handle)) = (&hls, &ingest) {
-        crate::web::set_hls_dir(output.dir.clone());
-        crate::hls::follow(output.clone(), handle.clone(), args.rtmp_port);
-    }
 
     let state = Arc::new(AppState {
         engine: engine.clone(),
@@ -250,7 +215,6 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         ingest,
         live,
         rtmp_port: args.rtmp_port,
-        hls,
     });
 
     let mut app = Router::new()
@@ -383,8 +347,6 @@ pub struct AppState {
     pub live: Option<crate::live::LiveSubtitles>,
     /// Port the RTMP listener bound, for display.
     pub rtmp_port: u16,
-    /// Where HLS segments are written, when the video path is on.
-    pub hls: Option<crate::hls::HlsOutput>,
 }
 
 /// Report what the live path is doing, for the console to display.
@@ -398,14 +360,6 @@ async fn handler_live_status(State(app): State<Arc<AppState>>) -> impl IntoRespo
         Some(live) => (live.enabled(), live.latest().await),
         None => (false, String::new()),
     };
-    let (video_enabled, video_ready, segment_seconds) = match &app.hls {
-        Some(output) => (
-            true,
-            crate::hls::playlist_ready(output),
-            crate::hls::segment_seconds(output),
-        ),
-        None => (false, false, None),
-    };
 
     Json(serde_json::json!({
         "rtmp_enabled": rtmp_enabled,
@@ -414,9 +368,6 @@ async fn handler_live_status(State(app): State<Arc<AppState>>) -> impl IntoRespo
         "publishing": publishing,
         "stream_key": stream_key,
         "latest": latest,
-        "video_enabled": video_enabled,
-        "video_ready": video_ready,
-        "segment_seconds": segment_seconds,
     }))
 }
 

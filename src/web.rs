@@ -257,10 +257,6 @@ pub fn routes() -> Router<Arc<AppState>> {
         // short path because it gets typed into OBS by hand.
         .route("/live", get(caption))
         .route("/_ui/{*path}", get(asset))
-        // Segments and playlist for the preview player. Served from a
-        // directory ffmpeg writes to, so the name is checked rather than
-        // trusted.
-        .route("/hls/{*path}", get(hls_file))
         .route("/api/jobs", post(create_job))
         .route("/api/jobs/{id}", get(job_status))
         .route("/api/jobs/{id}/files/{kind}", get(job_file))
@@ -288,51 +284,6 @@ async fn index() -> Response {
         )
             .into_response(),
     }
-}
-
-/// Serve an HLS playlist or segment.
-async fn hls_file(AxumPath(path): AxumPath<String>) -> Response {
-    // The states hold the directory; a state without one has video disabled.
-    let Some(state) = HLS_DIR.get() else {
-        return (StatusCode::NOT_FOUND, "video forwarding is disabled").into_response();
-    };
-    if !crate::hls::is_servable(&path) {
-        return (StatusCode::NOT_FOUND, "no such file").into_response();
-    }
-
-    let full = state.join(&path);
-    match tokio::fs::read(&full).await {
-        Ok(bytes) => {
-            // A live playlist must not be cached, or a player will keep reading
-            // a stale list and never advance.
-            let content_type = if path.ends_with(".m3u8") {
-                "application/vnd.apple.mpegurl"
-            } else {
-                "video/mp2t"
-            };
-            (
-                [
-                    (header::CONTENT_TYPE, content_type),
-                    (header::CACHE_CONTROL, "no-cache, no-store, must-revalidate"),
-                ],
-                bytes,
-            )
-                .into_response()
-        }
-        Err(_) => (StatusCode::NOT_FOUND, "segment not available").into_response(),
-    }
-}
-
-/// Directory the HLS route serves from.
-///
-/// A process-wide cell rather than part of `AppState` because the route is
-/// registered on a router built before the state exists; there is only ever one
-/// such directory per process.
-static HLS_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-
-/// Point the HLS route at a directory.
-pub fn set_hls_dir(dir: PathBuf) {
-    let _ = HLS_DIR.set(dir);
 }
 
 /// The caption overlay page.

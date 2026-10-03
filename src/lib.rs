@@ -17,7 +17,6 @@
 //! * [`model`] -- locating the language model and projector GGUF pair.
 //! * [`paths`] -- the data directory, and fetching the model when missing.
 //! * [`rtmp`] -- RTMP ingest, for streams pushed by OBS.
-//! * [`hls`] -- repackaging that stream's video for a browser to play.
 //! * [`live`] -- live subtitles, from an incoming stream to viewers.
 //! * [`web`] -- the web interface: static assets and the upload API.
 //! * [`audio`] -- decoding WAV input to the mono 16 kHz the model expects.
@@ -30,7 +29,6 @@ pub mod audio;
 pub mod cli;
 pub mod config;
 pub mod engine;
-pub mod hls;
 pub mod live;
 pub mod media;
 pub mod model;

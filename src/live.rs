@@ -3,54 +3,58 @@
 
 //! Live subtitles: turn an incoming stream into text other things can display.
 //!
-//! One task owns the recogniser for the live path. It follows the ingest, and
-//! while a publisher is connected it runs ffmpeg against this program's own
-//! RTMP listener to obtain 16 kHz mono PCM, which it feeds to the streaming
-//! algorithm.
-//!
-//! # Why ffmpeg dials in rather than being fed
-//!
-//! The audio arrives as RTMP messages. Extracting them, rebuilding a container
-//! and piping that to ffmpeg means reimplementing part of RTMP and getting the
-//! container exactly right; the first attempt at it stalled as soon as the
-//! stream carried video. Letting ffmpeg connect as an ordinary RTMP client
-//! removes all of that, and makes this connection independent of whatever else
-//! is reading the same stream.
+//! One task owns the recogniser for the live path. It subscribes to the RTMP
+//! ingest, feeds each block of decoded audio into the streaming algorithm, and
+//! publishes the text it produces to anyone listening.
 //!
 //! # Why this is separate from the WebSocket ingest
 //!
 //! The WebSocket path is request-driven: a client connects, pushes, and reads
-//! its own replies. This one follows the relay, and any number of viewers can
-//! watch the result without affecting each other. They share one engine because
-//! the process holds one model — a llama.cpp context holds a single sequence,
-//! so they take turns through the same mutex.
+//! its own replies. This one is a broadcast: one stream arrives, and any number
+//! of viewers follow the subtitles without affecting each other. Sharing one
+//! engine between them would be wrong anyway — a llama.cpp context holds a
+//! single sequence, so the two paths would corrupt each other's state. They
+//! take turns instead, through the same mutex the rest of the program uses.
 
 use std::sync::Arc;
 
-use anyhow::{Context as _, Result};
-use tokio::io::AsyncReadExt;
-use tokio::sync::{Mutex, broadcast};
+use tokio::sync::{broadcast, Mutex};
 use tracing::{debug, info, warn};
 
 use crate::rtmp::{IngestEvent, IngestHandle};
 use crate::stream::StreamEngine;
 
-/// A message published to viewers.
+/// What is sent to a viewer over `/ws/subtitles`.
 ///
-/// Two kinds share one connection: captions as they are recognised, and
-/// appearance changes when the console edits the configuration. Keeping them
-/// together means an overlay that is already open picks up a new setting
+/// Two kinds of message share one connection: captions as they are recognised,
+/// and appearance changes when the console edits the configuration. Keeping
+/// them together means an overlay that is already open picks up a new setting
 /// without being reloaded.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum ViewerMessage {
+    /// Recognition output.
     Subtitle {
         text: String,
         delta: String,
         reset: bool,
         at_ms: u64,
     },
+    /// The caption appearance changed.
     Caption(crate::config::CaptionConfig),
+}
+
+/// A subtitle line, as published to viewers.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SubtitleLine {
+    /// Full text since the last segment boundary.
+    pub text: String,
+    /// Text added by this update, for a renderer that appends.
+    pub delta: String,
+    /// True when the speaker paused and a new segment began.
+    pub reset: bool,
+    /// Milliseconds since the stream started, for ordering.
+    pub at_ms: u64,
 }
 
 /// Shared handle for viewers to subscribe to subtitles.
@@ -97,14 +101,17 @@ impl LiveSubtitles {
 /// Chunk size fed to the recogniser, in seconds.
 ///
 /// Matches the WebSocket path: the streaming algorithm expects roughly 160 ms,
-/// and ffmpeg's output block is an arbitrary size.
+/// and the audio arriving from ffmpeg is an arbitrary size.
 const CHUNK_SECONDS: f32 = 0.16;
 
 /// Start the live transcription task.
+///
+/// `enabled` is the `--no-subtitles` switch: when false the ingest still runs
+/// and audio is still decoded, so the picture path can be exercised without
+/// paying for recognition.
 pub fn spawn(
     engine: Arc<Mutex<StreamEngine>>,
     ingest: IngestHandle,
-    rtmp_url: String,
     context: String,
     language: Option<String>,
     enabled: bool,
@@ -121,168 +128,119 @@ pub fn spawn(
 
     tokio::spawn(async move {
         if !enabled {
-            info!("live subtitles disabled; the stream is still relayed");
+            info!("live subtitles disabled; audio will be decoded but not transcribed");
             return;
         }
 
-        // Stays up across publishers: the decoder is started when one connects
-        // and dropped when it leaves, so restarting OBS does not mean restarting
-        // this.
-        let mut task: Option<tokio::task::JoinHandle<()>> = None;
+        let mut state = engine.lock().await.init_state(
+            &context,
+            language.as_deref(),
+            0,
+            // The live path uses the same rollback window as the file paths.
+            1,
+            CHUNK_SECONDS,
+        );
+
+        let mut started = std::time::Instant::now();
+        let mut buffer: Vec<f32> = Vec::new();
+        let mut total_samples = 0usize;
+        let mut chunks = 0usize;
 
         while let Ok(event) = events.recv().await {
             match event {
                 IngestEvent::Published { stream_key } => {
                     info!(stream_key, "live transcription starting");
-                    let engine = engine.clone();
-                    let context = context.clone();
-                    let language = language.clone();
-                    let url = rtmp_url.clone();
-                    let publisher = task_handle.clone();
-                    task = Some(tokio::spawn(async move {
-                        if let Err(err) =
-                            decode(engine, url, context, language, publisher.clone()).await
-                        {
-                            warn!(error = %err, "live decoding stopped");
-                        }
-                        publisher.state.lock().await.active = false;
-                    }));
+                    started = std::time::Instant::now();
+                    state = engine.lock().await.init_state(
+                        &context,
+                        language.as_deref(),
+                        0,
+                        1,
+                        CHUNK_SECONDS,
+                    );
+                    buffer.clear();
+                    task_handle.state.lock().await.active = true;
                 }
+
                 IngestEvent::Unpublished { stream_key } => {
                     info!(stream_key, "live transcription stopping");
-                    if let Some(t) = task.take() {
-                        t.abort();
+                    // Flush whatever is left so the last words are not lost.
+                    let flush = {
+                        let guard = engine.lock().await;
+                        guard.finish_no_reset(&mut state)
+                    };
+                    if let Err(err) = flush {
+                        warn!(error = %err, "could not flush the final audio");
                     }
-                    task_handle.state.lock().await.active = false;
+                    info!(
+                        samples = total_samples,
+                        chunks,
+                        seconds = total_samples as f64
+                            / crate::audio::TARGET_SAMPLE_RATE as f64,
+                        "live audio summary"
+                    );
+                    let mut st = task_handle.state.lock().await;
+                    st.active = false;
+                    buffer.clear();
+                    total_samples = 0;
+                    chunks = 0;
+                }
+
+                IngestEvent::Audio { samples } => {
+                    if samples.is_empty() {
+                        continue;
+                    }
+                    total_samples += samples.len();
+                    if total_samples / crate::audio::TARGET_SAMPLE_RATE as usize % 5 == 0
+                        && chunks == 0
+                    {
+                        debug!(
+                            received = total_samples,
+                            "live audio arriving"
+                        );
+                    }
+                    buffer.extend_from_slice(&samples);
+
+                    let chunk_samples =
+                        (CHUNK_SECONDS * crate::audio::TARGET_SAMPLE_RATE as f32) as usize;
+                    while buffer.len() >= chunk_samples {
+                        let chunk: Vec<f32> = buffer.drain(..chunk_samples).collect();
+                        chunks += 1;
+
+                        // The engine is shared with the file paths, so take the
+                        // lock for the decode and release it between chunks.
+                        let outcome = {
+                            let guard = engine.lock().await;
+                            guard.push_no_reset(&chunk, &mut state)
+                        };
+
+                        match outcome {
+                            Ok(Some((_text, fixed))) => {
+                                let previous =
+                                    task_handle.state.lock().await.latest.clone();
+                                if fixed.len() > previous.len() {
+                                    let delta = fixed[previous.len()..].to_string();
+                                    let line = ViewerMessage::Subtitle {
+                                        text: fixed.clone(),
+                                        delta,
+                                        reset: false,
+                                        at_ms: started.elapsed().as_millis() as u64,
+                                    };
+                                    task_handle.state.lock().await.latest = fixed;
+                                    let _ = task_handle.tx.send(line);
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(err) => {
+                                warn!(error = %err, "live decode failed");
+                            }
+                        }
+                    }
                 }
             }
-        }
-        if let Some(t) = task {
-            t.abort();
         }
         debug!("live subtitle task ended");
     });
 
     handle
-}
-
-/// Pull audio from the relay and feed it to the recogniser.
-async fn decode(
-    engine: Arc<Mutex<StreamEngine>>,
-    rtmp_url: String,
-    context: String,
-    language: Option<String>,
-    out: LiveSubtitles,
-) -> Result<()> {
-    // ffmpeg connects to our own listener as an ordinary RTMP client and
-    // produces exactly the format the recogniser wants. `-vn` drops the video
-    // so this connection carries no more than it must.
-    let mut child = tokio::process::Command::new("ffmpeg")
-        .args([
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-i",
-            &rtmp_url,
-            "-vn",
-            "-f",
-            "f32le",
-            "-ar",
-            "16000",
-            "-ac",
-            "1",
-            "pipe:1",
-        ])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .context("could not start ffmpeg to read the stream")?;
-
-    let mut stdout = child.stdout.take().context("ffmpeg gave no stdout")?;
-    let mut stderr = child.stderr.take().context("ffmpeg gave no stderr")?;
-
-    // ffmpeg's complaints are the only clue when it decodes nothing, so they
-    // are read rather than discarded.
-    tokio::spawn(async move {
-        let mut text = String::new();
-        let _ = stderr.read_to_string(&mut text).await;
-        for line in text.lines().filter(|l| !l.trim().is_empty()) {
-            warn!(target: "r2t2::live::ffmpeg", "{line}");
-        }
-    });
-
-    let mut state = engine
-        .lock()
-        .await
-        .init_state(&context, language.as_deref(), 0, 1, CHUNK_SECONDS);
-    out.state.lock().await.active = true;
-
-    let started = std::time::Instant::now();
-    let mut buffer: Vec<f32> = Vec::new();
-    let mut raw = vec![0u8; 16 * 1024];
-    let mut carry: Vec<u8> = Vec::new();
-
-    loop {
-        let n = match stdout.read(&mut raw).await {
-            Ok(0) | Err(_) => break,
-            Ok(n) => n,
-        };
-        carry.extend_from_slice(&raw[..n]);
-
-        // f32 samples are four bytes; keep a partial one for next time.
-        let complete = carry.len() - (carry.len() % 4);
-        if complete == 0 {
-            continue;
-        }
-        buffer.extend(
-            carry[..complete]
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])),
-        );
-        carry.drain(..complete);
-
-        let chunk_samples = (CHUNK_SECONDS * crate::audio::TARGET_SAMPLE_RATE as f32) as usize;
-        while buffer.len() >= chunk_samples {
-            let chunk: Vec<f32> = buffer.drain(..chunk_samples).collect();
-
-            // The engine is shared with the file paths, so the lock is held for
-            // the decode and released between chunks.
-            let outcome = {
-                let guard = engine.lock().await;
-                guard.push_no_reset(&chunk, &mut state)
-            };
-
-            match outcome {
-                Ok(Some((_text, fixed))) => {
-                    let previous = out.state.lock().await.latest.clone();
-                    if fixed.len() > previous.len() {
-                        let delta = fixed[previous.len()..].to_string();
-                        let line = ViewerMessage::Subtitle {
-                            text: fixed.clone(),
-                            delta,
-                            reset: false,
-                            at_ms: started.elapsed().as_millis() as u64,
-                        };
-                        out.state.lock().await.latest = fixed;
-                        let _ = out.tx.send(line);
-                    }
-                }
-                Ok(None) => {}
-                Err(err) => warn!(error = %err, "live decode failed"),
-            }
-        }
-    }
-
-    // Flush whatever is left so the last words are not lost.
-    let flush = {
-        let guard = engine.lock().await;
-        guard.finish_no_reset(&mut state)
-    };
-    if let Err(err) = flush {
-        warn!(error = %err, "could not flush the final audio");
-    }
-    debug!("live decoding ended");
-    Ok(())
 }

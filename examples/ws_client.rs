@@ -77,7 +77,7 @@ async fn main() -> Result<()> {
 
     // Read the WAV and keep the raw frames: the server accepts int16 little
     // endian PCM, which is exactly what a 16-bit WAV body already is.
-    let mut reader = hound::WavReader::open(&cli.audio)
+    let reader = hound::WavReader::open(&cli.audio)
         .with_context(|| format!("could not open {}", cli.audio.display()))?;
     let spec = reader.spec();
     if spec.bits_per_sample != 16 {

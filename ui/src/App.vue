@@ -371,13 +371,6 @@ onBeforeUnmount(() => controller?.abort())
             <span v-if="live.stream_key" class="muted">· 串流密钥 “{{ live.stream_key }}”</span>
           </div>
 
-          <p v-if="live.rtmp_enabled && !live.video_enabled" class="hint">
-            服务端以 <code>--no-video</code> 启动，只生成字幕，不转发画面。
-          </p>
-          <p v-else-if="live.video_enabled && live.publishing && !live.video_ready" class="hint">
-            正在等待视频关键帧，画面稍后出现。
-          </p>
-
           <p v-if="!live.rtmp_enabled" class="error">
             服务端未启用 RTMP 接收，请去掉 <code>--no-rtmp</code> 后重启。
           </p>
@@ -686,7 +679,6 @@ h3 { font-size: 0.9rem; color: var(--muted); font-weight: 600; margin: 1.5rem 0 
 
 .hint.tight { margin: 0.2rem 0 0; font-size: 0.78rem; }
 .saved { color: var(--ok); font-size: 0.85rem; }
-.ok-line { color: var(--ok); margin: 0; }
 
 /* A path or URL with its own copy button. */
 .copy-row {
