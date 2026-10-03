@@ -71,14 +71,14 @@ async function startVideo() {
 
   if (HlsPlayer.isSupported()) {
     hls = new HlsPlayer({
-      // Deliberately conservative: a live stream that keeps up matters more
-      // than one that starts a second sooner, and a small buffer causes
-      // constant stalling on an unstable source.
       liveDurationInfinity: true,
-      // Start playback near the live edge.
-      liveSyncDurationCount: 2,
-      // Give up on a segment rather than waiting forever; a partly buffered
-      // stream should recover on its own.
+      // Stay one segment behind the live edge rather than two. Each segment of
+      // slack is a full segment of delay, and on a local connection there is
+      // no jitter to absorb.
+      liveSyncDurationCount: 1,
+      // Tolerate a slow segment rather than stalling: on a live stream it is
+      // better to skip forward than to fall further behind.
+      maxLiveSyncPlaybackRate: 1.5,
       fragLoadingMaxRetry: 6,
       manifestLoadingMaxRetry: 4,
     })

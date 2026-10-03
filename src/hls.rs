@@ -24,11 +24,8 @@
 use std::path::PathBuf;
 
 use anyhow::{Context as _, Result};
-use bytes::Bytes;
-use tokio::io::AsyncWriteExt;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
-use crate::rtmp::{flv_header, flv_tag, TAG_AUDIO, TAG_VIDEO};
 
 /// Everything the HTTP side needs to serve the stream.
 #[derive(Clone)]
@@ -71,57 +68,50 @@ pub struct HlsConfig {
 impl Default for HlsConfig {
     fn default() -> Self {
         Self {
-            segment_seconds: 2,
+            // One second, to keep the delay down. A segment cannot end before
+            // the sender's next keyframe, so this is a floor rather than a
+            // setting: with OBS left on "auto" the real length is whatever
+            // x264 picks, which is several seconds.
+            segment_seconds: 1,
             playlist_size: 6,
         }
     }
 }
 
-/// Feeds video (and the audio needed to keep the container valid) to ffmpeg,
-/// which writes HLS segments.
+/// Starts ffmpeg, which dials into our own RTMP listener and writes HLS.
+///
+/// ffmpeg pulls the stream itself rather than being fed one. That is the point
+/// of the relay: it speaks RTMP, so no container has to be rebuilt by hand, and
+/// audio and video become separate connections that cannot deadlock each other.
 pub struct HlsPackager {
-    stdin: tokio::process::ChildStdin,
     /// Held only for its `Drop`: killing ffmpeg when the packager goes away.
     /// `kill_on_drop` does the work; the field keeps the handle alive.
     #[allow(dead_code)]
     child: tokio::process::Child,
-    timestamp: u32,
-    /// Whether any video has actually arrived.
-    ///
-    /// A publisher may send audio only; the playlist then never appears, and
-    /// the viewer should be told that rather than left waiting.
-    saw_video: bool,
 }
 
 impl HlsPackager {
-    /// Start ffmpeg and prepare the output directory.
-    pub fn spawn(output: &HlsOutput, config: &HlsConfig) -> Result<Self> {
+    /// Prepare the output directory and start ffmpeg against `rtmp_url`.
+    pub fn spawn(
+        output: &HlsOutput,
+        config: &HlsConfig,
+        rtmp_url: &str,
+    ) -> Result<Self> {
         std::fs::create_dir_all(&output.dir)
             .with_context(|| format!("could not create {}", output.dir.display()))?;
 
         let playlist = output.playlist_path();
         let segment_pattern = output.dir.join("seg%d.ts");
 
-        let mut child = tokio::process::Command::new("ffmpeg")
-            .args([
-                "-hide_banner",
-                "-loglevel", "warning",
-                "-f", "flv",
-                "-i", "pipe:0",
-                // Copy the video: no re-encoding, so no GPU cost and no
-                // generation loss. It also means segments can only be cut on
-                // the sender's keyframes.
-                "-c:v", "copy",
-                "-an",
-                "-f", "hls",
-                "-hls_time",
-            ])
+        let child = tokio::process::Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "warning", "-i", rtmp_url])
+            // Copy the video: no re-encoding, so no GPU cost and no generation
+            // loss. It also means segments can only end on the sender's
+            // keyframes, which is why the keyframe interval governs latency.
+            .args(["-c:v", "copy", "-an", "-f", "hls", "-hls_time"])
             .arg(config.segment_seconds.to_string())
             .args(["-hls_list_size"])
             .arg(config.playlist_size.to_string())
-            // delete_segments keeps the directory from growing without bound;
-            // omit_endlist says the stream is live, so a player keeps polling
-            // rather than treating the playlist as finished.
             .args([
                 "-hls_flags",
                 "delete_segments+omit_endlist+independent_segments",
@@ -131,85 +121,95 @@ impl HlsPackager {
             ])
             .arg(&segment_pattern)
             .arg(&playlist)
-            .stdin(std::process::Stdio::piped())
+            .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .kill_on_drop(true)
             .spawn()
             .context("could not start ffmpeg for HLS")?;
 
-        let stdin = child.stdin.take().context("ffmpeg gave no stdin")?;
         info!(
             dir = %output.dir.display(),
             segment_seconds = config.segment_seconds,
             "HLS output started"
         );
-
-        Ok(Self {
-            stdin,
-            child,
-            timestamp: 0,
-            saw_video: false,
-        })
+        Ok(Self { child })
     }
+}
 
-    /// Whether any video has been seen.
-    pub fn saw_video(&self) -> bool {
-        self.saw_video
-    }
-
-    /// Forward one message from the RTMP session.
-    ///
-    /// Both audio and video go to ffmpeg, even though only the video is kept:
-    /// ffmpeg uses the audio timestamps to keep the container's clock sane, and
-    /// dropping it entirely makes some players misjudge the duration.
-    pub async fn push(&mut self, tag_type: u8, data: &Bytes) -> Result<()> {
-        if tag_type == TAG_VIDEO {
-            self.saw_video = true;
+/// Remove the playlist and segments.
+pub fn cleanup(output: &HlsOutput) {
+    if let Ok(entries) = std::fs::read_dir(&output.dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let named = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default();
+            if named.ends_with(".ts") || named.ends_with(".m3u8") {
+                let _ = std::fs::remove_file(&path);
+            }
         }
-
-        let mut packet = Vec::with_capacity(data.len() + 32);
-        if self.timestamp == 0 {
-            packet.extend_from_slice(&flv_header(
-                tag_type == TAG_AUDIO,
-                tag_type == TAG_VIDEO,
-            ));
-        }
-        packet.extend_from_slice(&flv_tag(tag_type, data, self.timestamp));
-
-        self.stdin
-            .write_all(&packet)
-            .await
-            .context("the HLS packager stopped accepting data")?;
-
-        // Advance by roughly a frame. The exact step does not matter to ffmpeg,
-        // which reads the real timestamps from the FLV tags where it can; this
-        // only keeps the clock moving forward.
-        self.timestamp = self.timestamp.saturating_add(if tag_type == TAG_VIDEO { 33 } else { 20 });
-        Ok(())
     }
+    debug!(dir = %output.dir.display(), "cleared the HLS output");
+}
 
-    /// Remove the playlist and segments.
-    pub fn cleanup(output: &HlsOutput) {
-        if let Ok(entries) = std::fs::read_dir(&output.dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let named = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or_default();
-                if named.ends_with(".ts") || named.ends_with(".m3u8") {
-                    let _ = std::fs::remove_file(&path);
+
+/// Start a packager each time a publisher connects.
+///
+/// The process is left running between streams rather than torn down and
+/// rebuilt: the playlist and its segments belong to the directory, and a viewer
+/// that is already watching keeps its connection when the publisher briefly
+/// restarts.
+pub fn follow(output: HlsOutput, ingest: crate::rtmp::IngestHandle, port: u16) {
+    let url = format!("rtmp://127.0.0.1:{port}/live");
+    let mut events = ingest.subscribe();
+    tokio::spawn(async move {
+        let mut packager: Option<HlsPackager> = None;
+        while let Ok(event) = events.recv().await {
+            match event {
+                crate::rtmp::IngestEvent::Published { .. } => {
+                    if packager.is_none() {
+                        match HlsPackager::spawn(&output, &HlsConfig::default(), &url) {
+                            Ok(p) => packager = Some(p),
+                            Err(err) => {
+                                warn!(error = %err, "could not start the HLS packager")
+                            }
+                        }
+                    }
+                }
+                crate::rtmp::IngestEvent::Unpublished { .. } => {
+                    // Dropping the packager lets ffmpeg finish the current
+                    // segment and exit, which leaves a playlist a player can
+                    // still read.
+                    packager = None;
                 }
             }
         }
-        debug!(dir = %output.dir.display(), "cleared the HLS output");
-    }
+    });
 }
 
 /// Whether a playlist currently exists.
 pub fn playlist_ready(output: &HlsOutput) -> bool {
     output.playlist_path().is_file()
+}
+
+/// Read the target duration out of a live playlist.
+///
+/// This is what the segments actually came out at, as opposed to what was
+/// asked for. The two differ whenever the sender's keyframe interval is longer
+/// than `segment_seconds`, which is easy to do by accident — OBS's keyframe
+/// interval defaults to "auto", which x264 turns into 250 frames — and has no
+/// symptom other than several seconds of unexplained delay.
+pub fn segment_seconds(output: &HlsOutput) -> Option<u32> {
+    let text = std::fs::read_to_string(output.playlist_path()).ok()?;
+    let line = text
+        .lines()
+        .find(|l| l.starts_with("#EXT-X-TARGETDURATION:"))?;
+    let value = line.split(':').nth(1)?.trim();
+    // The tag is documented as an integer, but players accept a float and
+    // ffmpeg has been known to write one.
+    value.parse::<f64>().ok().map(|v| v.ceil() as u32)
 }
 
 /// File name safety: refuse anything that is not a plain segment or playlist.
@@ -240,16 +240,38 @@ mod tests {
     }
 
     #[test]
+    fn the_target_duration_is_read_back() {
+        let dir = std::env::temp_dir().join("r2t2-hls-duration");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = HlsOutput::new(dir.clone());
+        std::fs::write(
+            out.playlist_path(),
+            "#EXTM3U\n#EXT-X-TARGETDURATION:8\n#EXTINF:8.0,\nseg1.ts\n",
+        )
+        .unwrap();
+        assert_eq!(segment_seconds(&out), Some(8));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_playlist_has_no_duration() {
+        let out = HlsOutput::new(PathBuf::from("/nonexistent/hls"));
+        assert_eq!(segment_seconds(&out), None);
+    }
+
+    #[test]
     fn the_playlist_path_is_inside_the_output_directory() {
         let out = HlsOutput::new(PathBuf::from("/tmp/hls"));
         assert_eq!(out.playlist_path(), PathBuf::from("/tmp/hls/stream.m3u8"));
     }
 
     #[test]
-    fn defaults_match_the_documented_latency() {
+    fn defaults_favour_low_latency() {
         let c = HlsConfig::default();
-        // Six two-second segments is roughly the buffering a player needs.
-        assert_eq!(c.segment_seconds, 2);
+        // Short segments for delay; enough of them that a viewer joining late
+        // still has a window to start from.
+        assert_eq!(c.segment_seconds, 1);
         assert_eq!(c.playlist_size, 6);
     }
 }

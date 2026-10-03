@@ -200,7 +200,7 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     // The HLS output is rebuilt from scratch each run: segments from an
     // earlier stream would be served alongside the new ones and confuse a
     // player about where the stream begins.
-    let hls_setup = if args.no_rtmp || args.no_video {
+    let hls = if args.no_rtmp || args.no_video {
         None
     } else {
         let dir = args
@@ -208,17 +208,14 @@ pub async fn run(args: ServeArgs) -> Result<()> {
             .clone()
             .unwrap_or_else(|| crate::paths::work_dir().join("hls"));
         let output = crate::hls::HlsOutput::new(dir);
-        crate::hls::HlsPackager::cleanup(&output);
-        Some(crate::rtmp::HlsSetup {
-            output,
-            config: crate::hls::HlsConfig::default(),
-        })
+        crate::hls::cleanup(&output);
+        Some(output)
     };
 
     let ingest = if args.no_rtmp {
         None
     } else {
-        Some(crate::rtmp::serve(args.rtmp_port, hls_setup.clone()).await?)
+        Some(crate::rtmp::serve(args.rtmp_port).await?)
     };
 
     let live = match &ingest {
@@ -228,6 +225,7 @@ pub async fn run(args: ServeArgs) -> Result<()> {
             Some(crate::live::spawn(
                 engine.clone(),
                 handle.clone(),
+                format!("rtmp://127.0.0.1:{}/live", args.rtmp_port),
                 args.common.context.clone(),
                 args.common.forced_language().map(str::to_owned),
                 !args.no_subtitles,
@@ -235,9 +233,13 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         }
     };
 
-    // Tell the HLS route where to read from before any request arrives.
-    if let Some(hls) = &hls_setup {
-        crate::web::set_hls_dir(hls.output.dir.clone());
+    // Tell the HLS route where to read from before any request arrives, and
+    // start a packager whenever a publisher connects. Like the subtitle path,
+    // it follows the relay rather than being fed: ffmpeg dials in as its own
+    // RTMP client, so the two cannot interfere.
+    if let (Some(output), Some(handle)) = (&hls, &ingest) {
+        crate::web::set_hls_dir(output.dir.clone());
+        crate::hls::follow(output.clone(), handle.clone(), args.rtmp_port);
     }
 
     let state = Arc::new(AppState {
@@ -248,7 +250,7 @@ pub async fn run(args: ServeArgs) -> Result<()> {
         ingest,
         live,
         rtmp_port: args.rtmp_port,
-        hls: hls_setup.map(|h| h.output),
+        hls,
     });
 
     let mut app = Router::new()
@@ -396,9 +398,13 @@ async fn handler_live_status(State(app): State<Arc<AppState>>) -> impl IntoRespo
         Some(live) => (live.enabled(), live.latest().await),
         None => (false, String::new()),
     };
-    let (video_enabled, video_ready) = match &app.hls {
-        Some(output) => (true, crate::hls::playlist_ready(output)),
-        None => (false, false),
+    let (video_enabled, video_ready, segment_seconds) = match &app.hls {
+        Some(output) => (
+            true,
+            crate::hls::playlist_ready(output),
+            crate::hls::segment_seconds(output),
+        ),
+        None => (false, false, None),
     };
 
     Json(serde_json::json!({
@@ -410,6 +416,7 @@ async fn handler_live_status(State(app): State<Arc<AppState>>) -> impl IntoRespo
         "latest": latest,
         "video_enabled": video_enabled,
         "video_ready": video_ready,
+        "segment_seconds": segment_seconds,
     }))
 }
 

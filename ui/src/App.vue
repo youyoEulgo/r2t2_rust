@@ -686,6 +686,7 @@ h3 { font-size: 0.9rem; color: var(--muted); font-weight: 600; margin: 1.5rem 0 
 
 .hint.tight { margin: 0.2rem 0 0; font-size: 0.78rem; }
 .saved { color: var(--ok); font-size: 0.85rem; }
+.ok-line { color: var(--ok); margin: 0; }
 
 /* A path or URL with its own copy button. */
 .copy-row {

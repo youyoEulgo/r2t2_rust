@@ -273,6 +273,24 @@ re-encoded — and played with hls.js, which is loaded only when there is
 actually a picture; the page itself stays at 4.5 KB and an OBS browser source
 showing captions only never downloads the player at all.
 
+### How the stream is handled
+
+`r2t2 serve` accepts one RTMP publisher and relays every message it sends to
+each subscriber. The subtitles and the picture are two of those subscribers,
+each an ffmpeg that dials in as an ordinary RTMP client:
+
+```
+OBS ──RTMP──> r2t2:1935 ──┬── ffmpeg ──> 16 kHz PCM ──> recognition ──> /ws/subtitles
+                          │
+                          └── ffmpeg ──> HLS ──> /hls/stream.m3u8 ──> /live
+```
+
+Nothing here parses FLV or rebuilds a container. ffmpeg already speaks RTMP, and
+letting it connect removes a whole class of problem: an earlier version piped
+hand-rebuilt FLV into ffmpeg, which worked for audio-only streams and stalled
+the moment video was present, because ffmpeg would not produce output until its
+stdout was drained while the task meant to drain it never ran.
+
 **Picture latency is about 5 seconds, and the sender sets it.** A segment can
 only end on a keyframe, so `-c:v copy` cannot cut more finely than the
 keyframe interval. In OBS, 输出 → 关键帧间隔 should be 2 seconds: the default

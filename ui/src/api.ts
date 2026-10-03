@@ -155,6 +155,13 @@ export interface LiveStatus {
   video_enabled: boolean
   /** Whether a playlist exists, i.e. video is actually arriving. */
   video_ready: boolean
+  /**
+   * Segment length the segments actually came out at, in seconds.
+   *
+   * Larger than requested when the sender's keyframe interval is longer, which
+   * is the usual reason for unexpected delay.
+   */
+  segment_seconds: number | null
 }
 
 /** How the caption overlay is drawn. Mirrors the server's configuration. */
