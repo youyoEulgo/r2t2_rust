@@ -197,7 +197,6 @@ fn find_libraries(build: &Path) -> Vec<PathBuf> {
 }
 
 /// Whether the build that lives under `build` was configured with CUDA.
-#[cfg(windows)]
 fn has_cuda(build: &Path) -> bool {
     std::fs::read_to_string(build.join("CMakeCache.txt"))
         .map(|cache| cache.contains("GGML_CUDA:BOOL=ON"))
@@ -209,7 +208,6 @@ fn has_cuda(build: &Path) -> bool {
 /// Not guessed from `CUDA_PATH`: the build used whichever toolkit CMake
 /// located, and linking against a different one's import libraries is the kind
 /// of mismatch that produces a DLL that will not load.
-#[cfg(windows)]
 fn cuda_library_dir(build: &Path) -> Option<PathBuf> {
     let cache = std::fs::read_to_string(build.join("CMakeCache.txt")).ok()?;
 
@@ -224,19 +222,40 @@ fn cuda_library_dir(build: &Path) -> Option<PathBuf> {
     };
     let mut candidates = Vec::new();
     if let Some(bin) = key("CUDAToolkit_BIN_DIR:PATH=") {
+        // `lib/x64` is the Windows toolkit's layout; Linux uses `lib64`.
         candidates.push(bin.join("../lib/x64"));
+        candidates.push(bin.join("../lib64"));
     }
     if let Some(lib) = key("CUDAToolkit_LIBRARY_DIR:PATH=") {
         candidates.push(lib);
     }
 
     candidates.into_iter().find(|dir| {
-        dir.join("cudart_static.lib").is_file() && dir.join("cublas.lib").is_file()
+        dir.join(cuda_runtime_name()).is_file() && dir.join(cuda_blas_name()).is_file()
     })
 }
 
-/// Find the directory holding `name` anywhere under `root`.
+/// The CUDA runtime library, as this platform names it.
 #[cfg(windows)]
+fn cuda_runtime_name() -> &'static str {
+    "cudart_static.lib"
+}
+#[cfg(not(windows))]
+fn cuda_runtime_name() -> &'static str {
+    "libcudart.so"
+}
+
+/// The cuBLAS library, as this platform names it.
+#[cfg(windows)]
+fn cuda_blas_name() -> &'static str {
+    "cublas.lib"
+}
+#[cfg(not(windows))]
+fn cuda_blas_name() -> &'static str {
+    "libcublas.so"
+}
+
+/// Find the directory holding `name` anywhere under `root`.
 fn search_for(root: &Path, name: &str) -> Option<PathBuf> {
     let entries = std::fs::read_dir(root).ok()?;
     let mut subdirectories = Vec::new();
@@ -253,17 +272,67 @@ fn search_for(root: &Path, name: &str) -> Option<PathBuf> {
         .find_map(|directory| search_for(&directory, name))
 }
 
-/// The one directory a Unix build links from, which carries everything above it.
+/// Every directory holding one of the archives a Unix build links.
+///
+/// A static build does not gather them into `bin/` the way a shared one did:
+/// each target writes its archive beside its own sources, so `libllama.a` is
+/// under `src/`, `libmtmd.a` under `tools/mtmd/` and the ggml ones under
+/// `ggml/src/`. They are located rather than assumed, for the same reason the
+/// Windows build does it: the layout belongs to llama.cpp and has changed
+/// before.
+///
+/// The order runs dependencies before dependents, so the linker resolves each
+/// archive's undefined symbols from the ones that follow it.
 #[cfg(not(windows))]
 fn find_libraries(build: &Path) -> Vec<PathBuf> {
-    let bin = build.join("bin");
-    if !bin.is_dir() {
-        panic!(
-            "llama.cpp built but {} does not exist; the layout may have changed",
-            bin.display()
-        );
+    let wanted = [
+        "ggml-cpu",
+        "ggml-cuda",
+        "ggml-base",
+        "ggml",
+        "vendor-hash",
+        "mtmd",
+        "llama",
+    ];
+
+    let mut dirs = Vec::new();
+    for name in wanted {
+        // No CUDA toolkit means no CUDA archive, which is a CPU build rather
+        // than a broken one; every other archive is required.
+        if name == "ggml-cuda" && !has_cuda(build) {
+            continue;
+        }
+        let file = format!("lib{name}.a");
+        let bin = build.join("bin");
+        let found = if bin.join(&file).is_file() {
+            Some(bin)
+        } else {
+            search_for(build, &file)
+        };
+        match found {
+            Some(dir) if !dirs.contains(&dir) => dirs.push(dir),
+            Some(_) => {}
+            None => panic!(
+                "llama.cpp built but {file} was not found under {}; \
+                 the layout may have changed",
+                build.display()
+            ),
+        }
     }
-    vec![bin]
+
+    // The CUDA runtime and cuBLAS are not built here; they come from the
+    // toolkit, and `libggml-cuda.a` leaves their symbols undefined.
+    if has_cuda(build) {
+        match cuda_library_dir(build) {
+            Some(dir) if !dirs.contains(&dir) => dirs.push(dir),
+            _ => panic!(
+                "llama.cpp was built with CUDA but the toolkit library directory \
+                 was not found in {}; the layout may have changed",
+                build.join("CMakeCache.txt").display()
+            ),
+        }
+    }
+    dirs
 }
 
 /// Clone llama.cpp at the pinned revision if it is not already there.
@@ -361,15 +430,15 @@ fn configure_and_build(source: &Path, build: &Path) {
     #[cfg(windows)]
     cmake.arg("-DCMAKE_CONFIGURATION_TYPES=Release");
 
-    // Shared libraries keep Unix runtime loading simple. On Windows, static
-    // linking is more convenient for a double-clickable executable: the
-    // equivalent DLLs would have to be copied beside the exe after every
-    // Cargo build, while MSVC static libraries can be linked directly.
-    if cfg!(windows) {
-        cmake.arg("-DBUILD_SHARED_LIBS=OFF");
-    } else {
-        cmake.arg("-DBUILD_SHARED_LIBS=ON");
-    }
+    // Static archives on every platform.
+    //
+    // The Unix build used shared libraries, which meant the executable only ran
+    // where the build directory still existed: the `.so` files live under
+    // `target/.../out/llama.cpp-build/` and the rpath pointed there, so copying
+    // the binary elsewhere or running `cargo clean` produced "library not
+    // loaded". Static archives make the executable the whole program, which is
+    // what a tool people are meant to double-click has to be.
+    cmake.arg("-DBUILD_SHARED_LIBS=OFF");
 
     if cuda {
         cmake.arg("-DGGML_CUDA=ON");
@@ -507,32 +576,49 @@ fn link(lib_dirs: &[PathBuf]) {
     }
     #[cfg(not(windows))]
     {
-        println!("cargo:rustc-link-lib=dylib=llama");
-        println!("cargo:rustc-link-lib=dylib=mtmd");
-    }
-
-    // Relative rpaths, so the binary keeps working when the tree is moved.
-    //
-    // ELF (Linux) spells the executable directory `$ORIGIN`; Mach-O (macOS)
-    // spells it `@loader_path`. Windows has no rpath at all: the normal DLL
-    // search order includes the executable's directory, so adding Unix linker
-    // flags there would make an MSVC build fail.
-    #[cfg(unix)]
-    {
-        println!("cargo:rustc-link-arg=-Wl,-rpath,{ORIGIN}/../lib");
-        println!("cargo:rustc-link-arg=-Wl,-rpath,{ORIGIN}");
-        // The build directory, for running straight out of target/<profile>/.
-        for dir in lib_dirs {
-            println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dir.display());
+        // Static archives, and all of them: `libllama.a` alone does not contain
+        // the ggml implementation, so the symbols it leaves undefined need the
+        // others named after it.
+        for name in ["ggml", "ggml-base", "ggml-cpu", "vendor-hash", "mtmd", "llama"] {
+            println!("cargo:rustc-link-lib=static={name}");
+        }
+        if lib_dirs.iter().any(|dir| dir.join("libggml-cuda.a").is_file()) {
+            println!("cargo:rustc-link-lib=static=ggml-cuda");
+            // The CUDA runtime and cuBLAS are not built here; they come from
+            // the toolkit, and the ggml-cuda archive leaves their symbols
+            // undefined.
+            println!("cargo:rustc-link-lib=dylib=cudart");
+            println!("cargo:rustc-link-lib=dylib=cublas");
+            println!("cargo:rustc-link-lib=dylib=cublasLt");
+            // The driver API, which lives in the loader directory rather than
+            // the toolkit: it belongs to the NVIDIA driver, not to the CUDA
+            // toolkit, and is exactly what is present at run time on a machine
+            // with a card in it.
+            println!("cargo:rustc-link-search=native=/usr/lib");
+            println!("cargo:rustc-link-lib=dylib=cuda");
+        }
+        // Static archives bring their own dependencies, and these are the
+        // runtime and OpenMP implementation llama.cpp was compiled against.
+        // The names differ by platform: GNU's libstdc++ and libgomp on Linux,
+        // LLVM's libc++ and libomp elsewhere.
+        #[cfg(target_os = "macos")]
+        {
+            println!("cargo:rustc-link-lib=dylib=c++");
+            println!("cargo:rustc-link-lib=dylib=omp");
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            println!("cargo:rustc-link-lib=dylib=stdc++");
+            println!("cargo:rustc-link-lib=dylib=gomp");
         }
     }
-}
 
-/// How the platform spells "the directory holding this executable".
-#[cfg(target_os = "macos")]
-const ORIGIN: &str = "@loader_path";
-#[cfg(not(target_os = "macos"))]
-const ORIGIN: &str = "$ORIGIN";
+    // No rpath is needed: every llama.cpp archive is linked into the binary, so
+    // there is nothing to find at run time. The rpath rules that used to be
+    // here pointed at the build directory, which is what made the executable
+    // work only while `target/` survived.
+    let _ = lib_dirs;
+}
 
 /// Generate the FFI declarations from the headers.
 ///
